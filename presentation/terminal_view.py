@@ -10,10 +10,26 @@ from rich.table import Table
 console = Console()
 
 
+def _draw_sparkline(points: list[dict[str, Any]]) -> str:
+    """基于 Unicode 字符绘制紧凑迷你走势线 ( ▂▃▄▅▆▇█)."""
+    if not points or len(points) < 2:
+        return ""
+    vals = [float(p.get("value", 0.0)) for p in points]
+    min_v, max_v = min(vals), max(vals)
+    if max_v == min_v:
+        return "▄" * len(vals)
+    bars = " ▂▃▄▅▆▇█"
+    out = []
+    for v in vals:
+        idx = int((v - min_v) / (max_v - min_v) * (len(bars) - 1))
+        out.append(bars[min(len(bars) - 1, max(0, idx))])
+    return "".join(out)
+
+
 def print_decision_card(card: dict[str, Any]) -> None:
-    """在终端渲染单股决断卡 (严格基于A股双轨逻辑与五维实盘支柱，杜绝重复与矛盾)."""
+    """在终端渲染单股决断卡 (深度整合质地五问、赚不赚钱看板、状态跃迁、估值双锚、主力行为与双轨实战决断)."""
     gear = card.get("decision_gear", "观察")
-    gear_color = "red" if gear == "回避" else ("green" if gear == "买入" else "yellow")
+    gear_color = "red" if "回避" in gear else ("green" if "做多" in gear or "核心" in gear or "买入" in gear else "yellow")
     gear_style = f"[{gear_color} bold]【{gear}】[/{gear_color} bold]"
 
     ticker = card.get("ticker", "")
@@ -29,7 +45,7 @@ def print_decision_card(card: dict[str, Any]) -> None:
     turnover = card.get("turnover_ratio", 0.0)
     pe = card.get("pe", 0.0)
 
-    # 标的基本面与行情抬头
+    # 1. 标的基本面与行情抬头
     header_info = (
         f"[bold white]{name}[/bold white] ([cyan]{ticker}[/cyan])  |  "
         f"现价: [bold]{price:.2f}[/bold]元 ([{pct_color}]{pct:+.2f}%[/{pct_color}])  |  "
@@ -51,22 +67,62 @@ def print_decision_card(card: dict[str, Any]) -> None:
     body_lines = [
         header_info,
         sub_header,
-        "[dim]─" * 70 + "[/dim]",
-        f"[bold cyan]❶ 宏观闸门 / 情绪周期:[/bold cyan]\n  {card.get('pillar_gate', '未接入')}",
-        f"[bold cyan]❷ 业务纯度 / 题材身位:[/bold cyan]\n  {card.get('pillar_business', '未接入')}",
-        f"[bold cyan]❸ 筹码阻力 / 封板生态:[/bold cyan]\n  {card.get('pillar_tape', '未接入')}",
-        f"[bold cyan]❹ 资金动向 / 监管余量:[/bold cyan]\n  {card.get('pillar_flow', '未接入')}",
-        f"[bold cyan]❺ 本土排雷 (二元风控):[/bold cyan]\n  {card.get('pillar_audit', '未接入')}",
-        "[dim]─" * 70 + "[/dim]",
-        f"[bold yellow]🎯 实战决断:[/bold yellow] [bold]{card.get('decision_title', '')}[/bold] (建议仓位: [bold yellow]{card.get('position_cap', 0.0)*100:.0f}%[/bold yellow])",
+        "[dim]─" * 78 + "[/dim]",
+    ]
+
+    # 2. 首页「赚不赚钱」数据看板 (Profitability Dashboard)
+    dashboard = card.get("profitability_dashboard") or {}
+    indicators = dashboard.get("indicators") or []
+    if indicators:
+        dash_lines = [
+            f"[bold green]📊 首页「赚不赚钱」数据看板:[/bold green] [dim]{dashboard.get('industry_reason', '')}[/dim]"
+        ]
+        for ind in indicators:
+            s_obj = ind.get("series")
+            spark = ""
+            if s_obj and s_obj.get("points"):
+                pts = s_obj["points"]
+                spark_bars = _draw_sparkline(pts)
+                p_labels = f"({pts[0]['label']}~{pts[-1]['label']})"
+                spark = f" [bold cyan]{spark_bars}[/bold cyan] [dim]{p_labels}[/dim]"
+
+            st = ind.get("status", "✓")
+            st_color = "green" if st == "✓" else ("yellow" if st == "⚠️" else "red")
+            val_str = ind.get("value", "")
+            trend_str = ind.get("trend", "")
+            note_str = ind.get("note", "")
+            note_desc = f" [dim]| 注: {note_str}[/dim]" if note_str else ""
+            dash_lines.append(
+                f"  [{st_color}]{st}[/{st_color}] [bold]{ind['name']}:[/bold] [bold white]{val_str}[/bold white]{spark} — {trend_str}{note_desc}"
+            )
+        body_lines.append("\n".join(dash_lines))
+        body_lines.append("[dim]─" * 78 + "[/dim]")
+
+    # 3. 五大核心支柱 (严格按新版买方框架)
+    p1 = card.get("pillar_1_quality") or card.get("pillar_audit") or "未接入"
+    p2 = card.get("pillar_2_state") or card.get("pillar_business") or "未接入"
+    p3 = card.get("pillar_3_odds") or card.get("pillar_tape") or "未接入"
+    p4 = card.get("pillar_4_path") or card.get("pillar_flow") or "未接入"
+    p5_dict = card.get("pillar_5_decision") or {}
+
+    body_lines.extend([
+        f"[bold cyan]❶ 是不是好公司？(质地五问 · 铁门筛选):[/bold cyan]\n  {p1}",
+        f"[bold cyan]❷ 在变好吗？(状态跃迁 λ · 稀疏事件与临界点):[/bold cyan]\n  {p2}",
+        f"[bold cyan]❸ 贵不贵？(P=F+N 叙事溢价拆解 · 反向DCF · [SOTP, DCF]双锚):[/bold cyan]\n  {p3}",
+        f"[bold cyan]❹ 主力行为生命周期与路径承载 (7阶段微观穿透与筹码承载):[/bold cyan]\n  {p4}",
+        "[dim]─" * 78 + "[/dim]",
+        f"[bold yellow]❺ 实战决断与执行战术:[/bold yellow] [bold]{card.get('decision_title', '')}[/bold] (建议仓位: [bold yellow]{card.get('position_cap', 0.0)*100:.0f}%[/bold yellow])",
+        f"  • [bold]三元组状态:[/bold] {p5_dict.get('triad_verdict', '')}",
+        f"  • [bold]三分买方判定:[/bold] {p5_dict.get('three_part_conclusion', '')}",
+        f"  • [bold]监管监控状态:[/bold] {p5_dict.get('regulatory_status', '')}",
         f"[bold yellow]📌 核心矛盾:[/bold yellow] {card.get('core_contradiction', '')}",
         f"[bold yellow]⚡ 实盘战术 (双轨实操指引):[/bold yellow]\n  {card.get('action_tactic', '')}",
         f"[bold red]🛑 实战防线 (T+1纪律):[/bold red]\n  {card.get('invalidation_line', '')}",
-    ]
+    ])
 
     panel = Panel(
         "\n\n".join([body_lines[0], body_lines[1]]) + "\n" + "\n\n".join(body_lines[2:]),
-        title=f"🎯 [bold yellow]AST-Trader A股买方投研决断卡[/bold yellow]",
+        title=f"🎯 [bold yellow]AST-Trader A股买方投研决断卡 (深度版)[/bold yellow]",
         border_style=gear_color,
     )
     console.print(panel)
@@ -119,98 +175,79 @@ def print_screener_table(result_obj: Any, mode: str = "close") -> None:
             ]
         ladder_panel = Panel(
             "\n".join(ladder_lines),
-            title="⚡ [bold yellow]全市场涨停连板天梯与短线情绪周期全景 (UZI Ladders)[/bold yellow]",
-            border_style="yellow",
+            title="📈 [bold cyan]全市场短线连板梯队与市场情绪总览[/bold cyan]",
+            border_style="cyan",
         )
         console.print(ladder_panel)
 
-    # 2. 打印精选候选池及战术卡
-    table = Table(title=f"🚀 AST-Trader 全市场短线漏斗筛选池 (模式: {mode})", show_lines=True)
+    # 2. 打印精选候选股漏斗表格
+    table = Table(
+        title=f"🏆 [bold yellow]AST-Trader A股短线实战精选池 ({mode.upper()} 模式)[/bold yellow]",
+        show_header=True,
+        header_style="bold magenta",
+    )
+    table.add_column("代码", style="cyan", width=10)
+    table.add_column("名称", style="bold white", width=10)
+    table.add_column("现价", justify="right", width=8)
+    table.add_column("涨跌幅", justify="right", width=9)
+    table.add_column("梯队身位", style="yellow", width=12)
+    table.add_column("所属题材", style="green", width=14)
+    table.add_column("决断档位", justify="center", width=10)
+    table.add_column("建议仓位", justify="right", width=10)
+    table.add_column("主力阶段与微观特征", style="dim", width=28)
 
-    table.add_column("排名", justify="center", style="cyan", no_wrap=True)
-    table.add_column("代码/名称", justify="center", style="bold")
-    table.add_column("现价 (元)", justify="right")
-    table.add_column("涨幅", justify="right")
-    table.add_column("主力净流入 (万)", justify="right")
-    table.add_column("行动状态 (UZI Action)", justify="center", style="bold")
-    table.add_column("契合战法/席位", style="magenta")
-    table.add_column("实操进场战术 (Playbook)", style="green")
-    table.add_column("铁律死锁退出线", style="red")
+    for item in candidates:
+        card = item.get("card", {})
+        ticker = card.get("ticker", item.get("ticker", ""))
+        name = card.get("name", item.get("name", ""))
+        price = card.get("price", 0.0)
+        pct = card.get("pct_chg", 0.0)
+        pct_color = "red" if pct > 0 else ("green" if pct < 0 else "white")
 
-    for i, c in enumerate(candidates, 1):
-        pct = c.get("pct_chg", 0.0)
-        pct_str = f"[red]{pct:+.2f}%[/red]" if pct > 0 else f"[green]{pct:+.2f}%[/green]"
-        net_wan = c.get("main_net_wan", 0.0)
-        net_str = f"[red]{net_wan:+.1f}[/red]" if net_wan > 0 else f"[green]{net_wan:+.1f}[/green]"
+        ladder = card.get("ladder_info") or {}
+        b_lvl = ladder.get("board_level", 0)
+        t_name = ladder.get("theme_name", "主线")
+        is_lead = ladder.get("is_leader", False)
+        lead_str = f" [bold red](龙一)[/bold red]" if is_lead else ""
+        tier_desc = f"{b_lvl}连板{lead_str}" if b_lvl > 0 else "首板/潜伏"
 
-        action = c.get("action", "watch_only")
-        if action == "buyable":
-            act_str = "[bold green]主升买入[/bold green]"
-        elif action == "wait_pullback":
-            act_str = "[bold yellow]等待回踩[/bold yellow]"
-        elif action == "wait_reseal":
-            act_str = "[bold cyan]等待回封[/bold cyan]"
-        else:
-            act_str = "[dim]仅列入观察[/dim]"
+        gear = card.get("decision_gear", "观察")
+        gear_color = "red" if "回避" in gear else ("green" if "做多" in gear or "核心" in gear or "买入" in gear else "yellow")
+        gear_fmt = f"[{gear_color} bold]【{gear}】[/{gear_color} bold]"
+
+        pos_str = f"{card.get('position_cap', 0.0)*100:.0f}%"
+        mf_st = card.get("main_force_stage", "【⏳ 存量震荡】")
+        micro = card.get("microstructure") or {}
+        smart_q = micro.get("smart_q")
+        q_str = f" Q={smart_q:.2f}" if smart_q is not None else ""
+        mf_summary = f"{mf_st}{q_str}"
 
         table.add_row(
-            str(i),
-            f"{c.get('name', '')}\n({c.get('code', '')})",
-            f"{c.get('close', 0.0):.2f}",
-            pct_str,
-            net_str,
-            act_str,
-            c.get("supporters", "普通资金"),
-            c.get("plan_high_open", "观察"),
-            c.get("plan_stop_loss", "跌破 -3% 止损"),
+            ticker,
+            name,
+            f"{price:.2f}",
+            f"[{pct_color}]{pct:+.2f}%[/{pct_color}]",
+            tier_desc,
+            t_name,
+            gear_fmt,
+            pos_str,
+            mf_summary,
         )
 
     console.print(table)
 
 
-def print_tracker_summary(tracker_data: dict[str, Any]) -> None:
-    """在终端渲染 Paper-Trading 选股追踪胜率与复盘大盘。"""
-    table = Table(title="📈 AST-Trader 实盘选股收益追踪与胜率复盘账本 (Paper-Trading Tracker)", show_lines=True)
-    table.add_column("指标名称", style="cyan", justify="left")
-    table.add_column("统计数值", style="bold yellow", justify="right")
+def print_tracker_summary(tracker_stats: dict[str, Any]) -> None:
+    """在终端渲染自研选股跟踪器回测/实盘绩效面板。"""
+    summary = tracker_stats.get("summary", {})
+    t = Table(title="📊 [bold green]AST-Trader 实盘候选池追踪与胜率统计[/bold green]")
+    t.add_column("统计维度", style="cyan")
+    t.add_column("指标数值", style="bold yellow")
 
-    table.add_row("历史累计跟踪选股样本", f"{tracker_data.get('total_samples', 0)} 只")
-    table.add_row("已完成 T+1 检验样本数", f"{tracker_data.get('evaluated_samples', 0)} 只")
-    table.add_row("T+1 实战胜率 (收盘上涨概率)", f"{tracker_data.get('win_rate_pct', 0.0):.1f}%")
-    table.add_row("T+1 平均收盘收益率", f"{tracker_data.get('avg_return_pct', 0.0):+.2f}%")
-    table.add_row("T+1 次日平均最大冲高幅度", f"{tracker_data.get('avg_runup_pct', 0.0):+.2f}%")
-    table.add_row("T+1 次日平均最大下探回撤", f"{tracker_data.get('avg_drawdown_pct', 0.0):+.2f}%")
+    t.add_row("已跟踪总标的数", str(summary.get("total_tracked", 0)))
+    t.add_row("买入档位标的数", str(summary.get("buy_count", 0)))
+    t.add_row("次日溢价胜率 (T+1 win rate)", f"{summary.get('t1_win_rate_pct', 0.0):.1f}%")
+    t.add_row("次日平均收益率 (T+1 avg return)", f"{summary.get('t1_avg_return_pct', 0.0):+.2f}%")
+    t.add_row("累计阿尔法收益 (T+1 sum return)", f"{summary.get('t1_sum_return_pct', 0.0):+.2f}%")
 
-    console.print(table)
-
-    details = tracker_data.get("details", [])
-    if details:
-        det_table = Table(title="🔍 近期选股样本 T+1 表现逐笔明细", show_lines=True)
-        det_table.add_column("选入日期", justify="center")
-        det_table.add_column("标的代码", justify="center", style="bold")
-        det_table.add_column("标的名称", justify="center")
-        det_table.add_column("选入价格", justify="right")
-        det_table.add_column("T+1收盘收益", justify="right")
-        det_table.add_column("T+1最大冲高", justify="right")
-        det_table.add_column("T+1最大回撤", justify="right")
-        det_table.add_column("检验状态", justify="center")
-
-        for d in details[-10:]:
-            t1_ret = d.get("t1_return_pct")
-            ret_str = f"[red]{t1_ret:+.2f}%[/red]" if (t1_ret is not None and t1_ret > 0) else (f"[green]{t1_ret:+.2f}%[/green]" if t1_ret is not None else "待交易日")
-            t1_run = d.get("t1_runup_pct")
-            run_str = f"[red]{t1_run:+.2f}%[/red]" if t1_run is not None else "-"
-            t1_dd = d.get("t1_drawdown_pct")
-            dd_str = f"[green]{t1_dd:+.2f}%[/green]" if t1_dd is not None else "-"
-
-            det_table.add_row(
-                d.get("trade_date", ""),
-                d.get("code", ""),
-                d.get("name", ""),
-                f"{d.get('close', 0.0):.2f}",
-                ret_str,
-                run_str,
-                dd_str,
-                d.get("status", ""),
-            )
-        console.print(det_table)
+    console.print(t)

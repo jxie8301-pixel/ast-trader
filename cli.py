@@ -141,6 +141,7 @@ def run_analyze(ticker_input: str, html_output: str | None = None) -> None:
         governance_info=gov_info,
         microstructure=microstructure,
         daily_df=daily_df,
+        financial_reports=f_data,
     )
 
     # 9. 渲染终端决断卡

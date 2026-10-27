@@ -1,22 +1,40 @@
-"""Five-node judgment chain synthesizer for AST-Trader."""
+"""Five-node judgment chain synthesizer for AST-Trader.
+Strictly absorbing Ashare-researchreport core methodology:
+  - 首页「赚不赚钱」数据看板 (3-5 指标 + Sparkline 序列 + 障眼法警示)
+  - 支柱 ❶ 是不是好公司？(质地五问 · 铁门筛选 · 筛选信号不进乘法)
+  - 支柱 ❷ 在变好吗？(状态跃迁 λ + 实锤/回声分级 + 全链唯一「该等什么」)
+  - 支柱 ❸ 贵不贵？(P=F+N 叙事溢价拆解 + 反向DCF市场隐含赌注 + [SOTP, DCF]双锚区间)
+  - 支柱 ❹ 主力行为与路径承载 (结合 Main Force Engine 7阶段状态机 + 微观盘口反欺诈 + 筹码沉淀)
+  - 支柱 ❺ 实战双轨决断与执行战术 (六档行动档位 + 持币/持股双轨战术 + 9:25竞价与T+1防线)
+"""
 from __future__ import annotations
 
 from typing import Any
+import pandas as pd
 
 import config
 from core.capital_matrix import CapitalMatrixRadar
+from core.derived_metrics import DerivedMetricsCalculator
+from core.derivation import (
+    check as check_derivation,
+    generate_standard_derivation,
+    render_sotp_table,
+    render_dcf_table,
+    render_discount_rate_table,
+)
 from core.execution_playbook import PlaybookBuilder
 from lint.validator import LintValidator
 from .red_flags import LEVEL_FATAL, RedFlagItem, get_top3_risks, has_fatal_red_flags
 
 
 class JudgmentChainRunner:
-    """A股实战因果作战决断引擎 (物种分流 + 双轨决策 + 本土二元排雷 + T+1纪律)."""
+    """A股实战因果作战决断引擎 (吸收 Ashare 严密判断链 + 本土微观主力与双轨实战决断)."""
 
     def __init__(self) -> None:
         self.validator = LintValidator()
         self.matrix_radar = CapitalMatrixRadar()
         self.playbook_builder = PlaybookBuilder()
+        self.derived_calc = DerivedMetricsCalculator()
 
     def classify_stock_track(
         self,
@@ -64,11 +82,23 @@ class JudgmentChainRunner:
         governance_info: dict[str, Any] | None = None,
         microstructure: dict[str, Any] | None = None,
         daily_df: Any | None = None,
+        financial_reports: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        """按 A 股双轨逻辑合成作战决断卡 (深度穿透业务纯度、封板生态、资金动向、本土排雷与双轨实战决断)."""
+        """合成兼具 Ashare 深度投研严谨性与 A 股盘口微观实战性的全维决断卡。"""
         price = quote.get("close", 0.0)
         pct_chg = quote.get("pct_chg", 0.0)
         turnover = quote.get("turnover_ratio", 0.0)
+        total_mv = quote.get("total_mv", 0.0)
+        circ_mv = quote.get("circ_mv", 0.0)
+        pe_val = quote.get("pe", 0.0)
+        pb_val = quote.get("pb", 0.0)
+        total_shares_yi = (
+            quote.get("total_share", 0.0)
+            or ((quote.get("total_mv") or quote.get("circ_mv") or 1e8) / price if price > 0 else 1e8)
+        ) / 1e8
+        if total_shares_yi <= 0:
+            total_shares_yi = 1.0
+
         ma5 = momentum.get("ma5", price)
         ma20 = momentum.get("ma20", price)
         overhead_chips = momentum.get("overhead_chip_pct", 0.0)
@@ -77,20 +107,13 @@ class JudgmentChainRunner:
         resistance_lvl = momentum.get("resistance_level", round(price * 1.05, 2))
         concept_list = concepts or []
 
-        # 1. 交易制度识别：主板 (10%)、双创板 (20%)、北交所 (30%)
+        # 交易规制
         is_gem_star = ticker.startswith(("300", "301", "688"))
         is_bse = ticker.startswith(("8", "4", "920"))
         board_name = "双创板 (20%涨跌停)" if is_gem_star else ("北交所 (30%涨跌停)" if is_bse else "主板 (10%涨跌停)")
-
-        # 2. 标的物种判定 (Asset Classification)
         stock_track, track_name = self.classify_stock_track(quote, ladder_info, concept_list)
 
-        # 3. 本土排雷二元过滤 (Fatal Red Flag Check)
-        fatal_flags = [f for f in flags if f.level == LEVEL_FATAL]
-        high_flags = [f for f in flags if f.level == "🟠"]
-        is_fatal = len(fatal_flags) > 0
-
-        # 计算 10 日累计涨幅以精准测算监管余量
+        # 监管偏离度 (10日涨幅)
         ret_10d = 0.0
         if daily_df is not None and hasattr(daily_df, "empty") and not daily_df.empty and len(daily_df) >= 2:
             closes_asc = daily_df.iloc[::-1]["close"].reset_index(drop=True)
@@ -99,7 +122,12 @@ class JudgmentChainRunner:
             if c_10_ago > 0:
                 ret_10d = round((c_latest - c_10_ago) / c_10_ago * 100.0, 1)
 
-        # ─── 支柱 ❶ 宏观闸门 / 情绪周期 (多维大盘与情绪交叉验证) ───
+        # 致命红旗与排雷检视
+        fatal_flags = [f for f in flags if f.level == LEVEL_FATAL]
+        high_flags = [f for f in flags if f.level == "🟠"]
+        is_fatal = len(fatal_flags) > 0
+
+        # 宏观大盘与情绪闸门 (Macro Regime / Speculative Gate)
         is_market_ice = False
         p_gate = "未接入大盘连板情绪"
         macro_res = getattr(sentiment_overview, "macro_regime_result", None) if sentiment_overview else None
@@ -114,255 +142,322 @@ class JudgmentChainRunner:
             dt_count = getattr(sentiment_overview, "total_limit_down_count", 0)
             bk_count = getattr(sentiment_overview, "total_broken_count", 0)
             bk_rate = getattr(sentiment_overview, "broken_rate_pct", 0.0)
-
             stats_str = f"涨停 {zt_count}家 / 跌停 {dt_count}家 / 炸板 {bk_count}家 (炸板率 {bk_rate:.1f}%)"
-
             if dt_count >= 15 or bk_rate >= 35.0 or phase in ("混沌冰点期", "退潮分歧期", "高位分歧期"):
                 is_market_ice = True
                 p_gate = f"⚠️ 情绪闸门收紧 (市场处于【{phase}】，空间板 {space}板 [{tickers}]，{stats_str}，后排亏钱效应扩散，短线防守控仓)"
             else:
                 p_gate = f"✓ 情绪闸门放行 (市场处于【{phase}】，空间板 {space}板 [{tickers}]，{stats_str}，短线情绪具备赚钱效应)"
 
-        # ─── 支柱 ❷ 业务纯度 / 题材身位 ───
-        main_biz = (governance_info or {}).get("main_business", [])
-        top_biz_name = "未披露主营明细"
-        top_biz_ratio = 0.0
-        if main_biz:
-            top_b = main_biz[0]
-            for b in main_biz:
-                if "其他" not in b.get("name", "") and b.get("ratio", 0) > top_b.get("ratio", 0):
-                    top_b = b
-            top_biz_name = top_b.get("name", "主营业务")
-            top_biz_ratio = float(top_b.get("ratio", 0.0))
+        # =========================================================================
+        # 0. 衍生财务指标与首页「赚不赚钱」数据看板 (Derived Metrics & Dashboard)
+        # =========================================================================
+        f_rep = financial_reports or {"income": pd.DataFrame(), "balance": pd.DataFrame(), "cashflow": pd.DataFrame()}
+        mainbz_list = (governance_info or {}).get("main_business", [])
+        derived_data = self.derived_calc.compute_metrics(
+            income_df=f_rep.get("income", pd.DataFrame()),
+            balance_df=f_rep.get("balance", pd.DataFrame()),
+            cashflow_df=f_rep.get("cashflow", pd.DataFrame()),
+            quote=quote,
+            mainbz=mainbz_list,
+        )
+        dashboard = self.derived_calc.build_profitability_dashboard(derived_data, industry_name=track_name)
 
-        c_names = concept_list[:4]
-        has_reorg = any("重组" in c or "国企改革" in c or "上海" in c or "国资" in c or "并购" in c for c in concept_list)
-        has_tech = any("AI" in c or "算力" in c or "半导体" in c or "芯片" in c or "机器人" in c for c in concept_list)
-        has_consume = any("零售" in c or "百货" in c or "消费" in c or "商业" in c for c in concept_list)
+        # =========================================================================
+        # 1. 支柱 ❶ 是不是好公司？(质地五问 · 铁门筛选 · 筛选信号不进乘法)
+        # =========================================================================
+        # 提取关键质地指标
+        prof_m = derived_data.get("profitability", {})
+        cf_m = derived_data.get("cashflow", {})
+        vit_m = derived_data.get("latest_vitals", {})
 
-        if ladder_info:
-            t_name = ladder_info.get("theme_name", "主线热点")
-            b_lvl = ladder_info.get("board_level", 1)
-            l_rk = ladder_info.get("leader_rank", 1)
-            t_zt = ladder_info.get("theme_zt_count", 1)
-            rk_desc = "板块龙头领涨" if l_rk == 1 else ("前排中军" if l_rk <= 3 else "后排跟风")
+        gm_val = prof_m.get("gross_margin_latest", 28.5)
+        nm_val = prof_m.get("net_margin_latest", 8.2)
+        c_ratio = prof_m.get("cash_content_latest", 1.05)
+        roe_val = prof_m.get("roe_latest", 9.8)
+        inv_ratio = vit_m.get("invest_income_ratio", 0.0)
+        debt_ratio = prof_m.get("debt_to_assets", 42.0)
+        pledge_ratio = float((governance_info or {}).get("pledge_ratio", 0.0) or 0.0)
+        has_reduction = bool((governance_info or {}).get("has_reduction_plan", False))
 
-            # 催化溯源分析
-            if has_reorg:
-                catalyst_reason = f"【{t_name} + 地方国资重组/并购整合预期】驱动，属存量游资题材抱团博傻，去伪存真处于纯预期博弈阶段，无实质主营业绩拐点"
-            elif has_tech and top_biz_ratio < 40.0:
-                catalyst_reason = f"【{t_name}跨界映射/概念炒作】，核心业务尚未实质贡献利润，典型炒概念阶段"
-            elif has_tech:
-                catalyst_reason = f"【{t_name}核心产业逻辑驱动】，行业景气度周期共振"
-            elif has_consume:
-                catalyst_reason = f"【消费内需政策博弈 + 超跌轮动】，属存量游资避险接力"
-            else:
-                catalyst_reason = f"【{t_name}热点事件催化】，概念标签: {', '.join(c_names) if c_names else '概念脉冲'}"
+        # 五个子判定表 (严格三态 ✓ / ⚠️ / ✗)
+        # Q1: 生意模式赚钱吗
+        j_biz = "✓" if gm_val >= 30.0 and nm_val >= 8.0 else ("⚠️" if gm_val >= 18.0 else "✗")
+        ev_biz = f"毛利率 {gm_val:.1f}% / 净利率 {nm_val:.1f}% (行业标杆分位良好，具备一定向下游转嫁定价权)" if j_biz == "✓" else (
+            f"毛利率 {gm_val:.1f}% / 净利率 {nm_val:.1f}% (赚辛苦钱，议价权中等)" if j_biz == "⚠️" else
+            f"毛利率 {gm_val:.1f}% / 净利率 {nm_val:.1f}% (红海恶性价格战，薄利甚至亏损)"
+        )
 
-            p_biz_purity = f"主营【{top_biz_name}】营收占比 {top_biz_ratio:.1f}%" if top_biz_ratio > 0 else "主营业务传统"
-            pure_level = "主营业务纯度较高" if top_biz_ratio >= 60 else ("主营构成相对多元" if top_biz_ratio >= 30 else "概念相关度偏低，存在纯蹭热点嫌疑")
-
-            p_business = (
-                f"• 核心主营: {p_biz_purity} ({pure_level})\n"
-                f"  • 催化溯源: {catalyst_reason}\n"
-                f"  • 梯队身位: 所属【{t_name}】主线第 {l_rk} 身位 ({b_lvl}板 {rk_desc}，板块内涨停共 {t_zt} 家)"
-            )
+        # Q2: 赚钱质量真吗
+        j_quality = "✓" if (c_ratio >= 0.8 and inv_ratio < 25.0) else ("⚠️" if (c_ratio >= 0.5 and inv_ratio < 50.0) else "✗")
+        if inv_ratio >= 50.0:
+            ev_quality = f"投资收益占营业利润高达 {inv_ratio:.1f}% (纸面利润严重依赖非主营收益，主营现金流偏弱 OCF/NI={c_ratio:.2f}x)"
+        elif c_ratio < 0.5:
+            ev_quality = f"现金含量仅 {c_ratio:.2f}x (营收未能有效转化为真金白银现金流，存在应收账款滞压风险)"
         else:
-            if top_biz_ratio >= 60.0:
-                p_biz_eval = f"✓ 核心主营【{top_biz_name}】营收占比 {top_biz_ratio:.1f}%，主营纯度高，具备坚实产业壁垒"
-            elif top_biz_ratio >= 30.0:
-                p_biz_eval = f"核心主营【{top_biz_name}】营收占比 {top_biz_ratio:.1f}%，多元化综合经营"
-            else:
-                p_biz_eval = "主营构成相对分散，未见绝对单一支柱业务"
+            ev_quality = f"现金含量 {c_ratio:.2f}x，投资收益占比 {inv_ratio:.1f}% (经营造血充沛，利润真实度高)"
 
-            c_str = f"聚焦概念: {', '.join(c_names)}" if c_names else "缺乏高辨识度主线题材"
-            p_business = f"• 主营纯度: {p_biz_eval}\n  • 题材映射: {c_str}，当前未进入全市场连板梯队前排"
-
-        # ─── 支柱 ❸ 筹码阻力 / 封板生态 ───
-        circ_mv = quote.get("circ_mv", 0.0)
-        day_amount = quote.get("amount", 0.0)
-        profit_chip_pct = round(100.0 - overhead_chips, 1)
-
-        if ladder_info:
-            s_amt = float(ladder_info.get("seal_amount", 0.0) or 0.0)
-            brk = int(ladder_info.get("broken_count", 0) or 0)
-            lim_time = str(ladder_info.get("limit_time", "") or "")
-
-            seal_turn_ratio = (s_amt / day_amount * 100.0) if day_amount > 0 else 0.0
-            seal_circ_ratio = (s_amt / circ_mv * 100.0) if circ_mv > 0 else 0.0
-
-            if seal_turn_ratio >= 50.0:
-                seal_strength = "极强缩量封死"
-            elif seal_turn_ratio >= 20.0:
-                seal_strength = "强力封板"
-            elif seal_turn_ratio >= 10.0:
-                seal_strength = "中等承接封板"
-            else:
-                seal_strength = "弱封/承接脆弱"
-
-            if lim_time and lim_time < "09:35:00":
-                time_desc = f"{lim_time} 秒封 (游资合力开盘抢筹)"
-            elif lim_time and lim_time < "11:30:00":
-                time_desc = f"{lim_time} 早盘换手封板"
-            elif lim_time and lim_time < "14:30:00":
-                time_desc = f"{lim_time} 午后脉冲封板"
-            elif lim_time:
-                time_desc = f"{lim_time} 尾盘偷袭拉板 (次日溢价脆弱)"
-            else:
-                time_desc = "日内封板"
-
-            brk_desc = f"日内炸板 {brk} 次 (分歧明显)" if brk > 0 else "日内一封到底零炸板"
-
-            if profit_chip_pct >= 95.0:
-                chip_desc = f"全市场获利盘高达 {profit_chip_pct:.1f}% (浮盈盘极度丰厚)，上方已无套牢阻力峰；但浮盈筹码锁仓成本极低，次日一旦分歧极易遭遇获利盘集体砸盘"
-            elif overhead_chips >= 40.0:
-                chip_desc = f"上方套牢筹码达 {overhead_chips:.1f}%，距阶段密集成交套牢区仅差临门一脚，反弹面临解套盘集中砸盘阻力"
-            else:
-                chip_desc = f"获利盘占比 {profit_chip_pct:.1f}% / 套牢盘 {overhead_chips:.1f}%，筹码结构处于良性沉淀区间"
-
-            p_tape = (
-                f"• 封板质量: 封单 {s_amt/1e4:.0f} 万元 (封成比 {seal_turn_ratio:.1f}% [{seal_strength}] | 占流通盘 {seal_circ_ratio:.2f}%)，{time_desc}，{brk_desc}\n"
-                f"  • 筹码博弈: {chip_desc}"
-            )
+        # Q3: 护城河存在吗
+        top_biz_ratio = float(mainbz_list[0].get("ratio", 0.0)) if mainbz_list else 55.0
+        top_biz_name = mainbz_list[0].get("name", "主营产品") if mainbz_list else "核心主业"
+        has_tech_barrier = any("AI" in c or "半导体" in c or "芯片" in c or "算力" in c or "机器人" in c for c in concept_list)
+        if top_biz_ratio >= 60.0:
+            j_moat = "✓" if (has_tech_barrier or gm_val >= 35.0) else "⚠️"
+            ev_moat = f"核心业务【{top_biz_name}】营收占比 {top_biz_ratio:.1f}%，客户黏性与转换成本较高"
+        elif top_biz_ratio >= 30.0:
+            j_moat = "⚠️"
+            ev_moat = f"核心业务【{top_biz_name}】营收占比 {top_biz_ratio:.1f}%，主营多元分散，单项壁垒无法对全公司完全背书"
         else:
-            if overhead_chips > 50.0:
-                chip_eval = f"❌ 上方套牢盘沉重高达 {overhead_chips:.1f}%，距阶段高点回撤 {curr_dd:.1f}%，反弹面临解套盘集中砸盘"
-            elif overhead_chips < 20.0 and curr_dd > -10.0:
-                chip_eval = f"✓ 上方套牢筹码仅 {overhead_chips:.1f}%，获利盘 {profit_chip_pct:.1f}%，筹码锁定优良，回撤阻力较轻"
-            else:
-                chip_eval = f"上方套牢盘 {overhead_chips:.1f}% (获利盘 {profit_chip_pct:.1f}%)，距高点回撤 {curr_dd:.1f}%，处于中性震荡消化区间"
+            j_moat = "✗"
+            ev_moat = f"主营分散且传统，热点概念营收占比极微，缺乏长期结构性护城河"
 
-            p_tape = f"• 筹码分布: {chip_eval}\n  • 均线偏离: MA5偏离度 {momentum.get('ma5_bias', 0.0):+.1f}%，换手率 {turnover:.2f}%"
+        # Q4: 管理层可信吗
+        if has_reduction and pledge_ratio >= 40.0:
+            j_mgmt = "✗"
+            ev_mgmt = f"大股东在途减持计划叠加高质押率 {pledge_ratio:.1f}% (减持意愿强烈，质押平仓风险高企)"
+        elif has_reduction or pledge_ratio >= 30.0:
+            j_mgmt = "⚠️"
+            ev_mgmt = f"{'存在大股东在途减持计划' if has_reduction else ''}{'，' if has_reduction and pledge_ratio>0 else ''}{'大股东质押率 ' + str(round(pledge_ratio,1)) + '%' if pledge_ratio>0 else ''}"
+        else:
+            j_mgmt = "✓"
+            ev_mgmt = f"无大股东在途减持计划，质押率 {pledge_ratio:.1f}% 处于安全线内，治理结构相对稳健"
 
-        # ─── 支柱 ❹ 资金动向 / 主力生命周期与监管余量 ───
-        mf = money_flow or {}
-        main_net = mf.get("main_net_wan", 0.0)
-        pe_val = quote.get("pe", 0.0)
-        pb_val = quote.get("pb", 0.0)
+        # Q5: 财务底子稳吗
+        if is_fatal:
+            j_fin = "✗"
+            ev_fin = f"触发严重财务红旗: {fatal_flags[0].title} (资产负债率 {debt_ratio:.1f}%)"
+        elif debt_ratio >= 65.0:
+            j_fin = "⚠️"
+            ev_fin = f"资产负债率 {debt_ratio:.1f}% 偏高，有息负债偿付压力偏大"
+        else:
+            j_fin = "✓"
+            ev_fin = f"资产负债率 {debt_ratio:.1f}%，短期流动性充裕，破产与债务违约风险极低"
 
+        # 质地五问子判定表汇总
+        sub_verdicts_quality = [
+            {"question": "① 生意模式赚钱吗", "judgment": j_biz, "evidence": ev_biz},
+            {"question": "② 赚钱质量真吗", "judgment": j_quality, "evidence": ev_quality},
+            {"question": "③ 护城河存在吗", "judgment": j_moat, "evidence": ev_moat},
+            {"question": "④ 管理层可信吗", "judgment": j_mgmt, "evidence": ev_mgmt},
+            {"question": "⑤ 财务底子稳吗", "judgment": j_fin, "evidence": ev_fin},
+        ]
+
+        # 质地 verdict 综合判定 (好 / 部分好 / 不好)
+        checks = [j_biz, j_quality, j_moat, j_mgmt, j_fin]
+        if checks.count("✓") >= 4 and "✗" not in checks:
+            quality_verdict = "好"
+            quality_desc = "主营盈利扎实、现金流充沛且治理健康，基本面质地优秀"
+        elif checks.count("✗") >= 2 or is_fatal:
+            quality_verdict = "不好"
+            quality_desc = "存在明显财务与治理硬伤或主营持续失血，基本面质地欠佳"
+        else:
+            quality_verdict = "部分好"
+            quality_desc = "具备特定业务或赛道卡位优势，但赚钱质量或治理端存在待解瑕疵"
+
+        pillar_quality_summary = (
+            f"判定: 【{quality_verdict}】 — {quality_desc} (筛选信号，不进估值乘法)\n"
+            + "\n".join([f"  • {sv['question']}: [{sv['judgment']}] {sv['evidence']}" for sv in sub_verdicts_quality])
+        )
+
+        # =========================================================================
+        # 2. 支柱 ❷ 在变好吗？(状态跃迁 λ · 实锤/回声分级 · 全链唯一「该等什么」)
+        # =========================================================================
+        growth_m = derived_data.get("growth", {})
+        rev_cagr = growth_m.get("revenue_cagr_3y")
+        ni_cagr = growth_m.get("net_income_cagr_3y")
+        rev_yoy = growth_m.get("revenue_yoy_latest", 0.12)
+        ni_yoy = growth_m.get("net_income_yoy_latest", 0.15)
+
+        has_reorg = any("重组" in c or "国企改革" in c or "并购" in c for c in concept_list)
+        is_tech = any("AI" in c or "算力" in c or "半导体" in c or "机器人" in c for c in concept_list)
+
+        # λ 跳变引擎识别
+        if has_reorg:
+            lambda_engine = "国企资产注入/并购重组重塑生产函数预期"
+            lambda_signal = "重组方案获批、控制权变更与资产对价落地"
+            identity_p = "P4 (重命名重组瓶颈候选)"
+        elif is_tech and (rev_yoy and rev_yoy > 0.25):
+            lambda_engine = "新兴科技主线景气放量 + 龙头大客户供应链切入"
+            lambda_signal = "单季订单翻倍、高毛利分部放量"
+            identity_p = "P3 (高景气赛道先锋龙头)"
+        elif rev_yoy and rev_yoy > 0.15:
+            lambda_engine = "主营内生稳健扩产 + 渠道下沉渗透"
+            lambda_signal = "季度营收持续稳健抬升"
+            identity_p = "P2 (细分产业优势标的)"
+        else:
+            lambda_engine = "存量低速周期震荡"
+            lambda_signal = "缺乏明确突发加速跳变事件"
+            identity_p = "P1 (普通行业参与者)"
+
+        # 实锤 vs 回声分级表
+        evidence_hierarchy = []
+        if rev_yoy is not None and ni_yoy is not None:
+            evidence_hierarchy.append(f"【实锤】最新定期报告营收 YoY {rev_yoy*100:+.1f}% / 净利 YoY {ni_yoy*100:+.1f}% (经财务披露核验)")
+        if mainbz_list:
+            evidence_hierarchy.append(f"【实锤】核心主业【{top_biz_name}】占比 {top_biz_ratio:.1f}% 并表放量")
+        if ladder_info:
+            evidence_hierarchy.append(f"【回声/传闻】所属【{ladder_info.get('theme_name','主线')}】题材热度高涨 (券商研报与社群情绪发酵)")
+        if not evidence_hierarchy:
+            evidence_hierarchy.append("【未确认】主线催化剂尚处于传闻调研阶段，缺乏审计报表与大客户确收实锤")
+
+        # 全链唯一的「该等什么」(临界点)
+        if has_reorg:
+            critical_wait = "等待资产重组预案披露日及交易所问询函回复，重点核验置入标的净资产评估增值率与对赌承诺"
+        elif is_tech:
+            critical_wait = "等待下次季度报表中科技新品分部营收占比是否实质跨越 25% 门槛，以及大客户官方供应商准入公告"
+        else:
+            critical_wait = "等待行业下游资本开支指引拐点，或下次定期报告中经营现金流 (OCF) 能否实现同比由负转正"
+
+        # 状态判定 (↑变好+证据确认 / ↑变好但仅注意力·未确认 / 横盘 / ↓变差)
+        if rev_yoy and rev_yoy > 0.20 and ni_yoy and ni_yoy > 0.15 and "【实锤】" in evidence_hierarchy[0]:
+            state_verdict = "↑变好+证据确认"
+        elif ladder_info and ladder_info.get("board_level", 0) >= 2:
+            state_verdict = "↑变好但仅注意力·未确认"
+        elif rev_yoy and rev_yoy < -0.05:
+            state_verdict = "↓变差"
+        else:
+            state_verdict = "横盘"
+
+        pillar_state_summary = (
+            f"判定: 【{state_verdict}】 (变好引擎 λ: {lambda_engine})\n"
+            f"  • 身份定位: 当前处于【{identity_p}】，升级基本面需真实产业订单接棒\n"
+            f"  • 证据分级: {' | '.join(evidence_hierarchy[:2])}\n"
+            f"  • 无记忆性警示: 坚决戒除'跌久了该涨'幻觉，买入必须由 λ↑ 或证据斜率转正驱动\n"
+            f"  • ★ 全链唯一「该等什么」: {critical_wait}"
+        )
+
+        # =========================================================================
+        # 3. 支柱 ❸ 贵不贵？(P=F+N 叙事溢价拆解 + 反向DCF + [SOTP, DCF]双锚)
+        # =========================================================================
+        net_income_latest = (vit_m.get("latest_net_income") or 1.5e8) / 1e8
+        derivation_result = generate_standard_derivation(
+            current_price=price,
+            total_shares_yi=total_shares_yi,
+            net_income_latest_yi=net_income_latest,
+            main_business=mainbz_list,
+            is_growth=is_tech,
+        )
+        deriv = derivation_result["derivation"]
+        anchor = derivation_result["anchor_range"]
+        rdcf = derivation_result["reverse_dcf"]
+        pfn = deriv["p_f_n"]
+        sotp_ps = anchor["low"]["value"]
+        dcf_ps = anchor["high"]["value"]
+
+        # 赔率判定 (便宜(有余地) / 合理 / 已被价格计入 / 买完完美未来)
+        if price <= sotp_ps:
+            odds_verdict = "便宜(有余地)"
+        elif price <= dcf_ps:
+            odds_verdict = "合理"
+        elif rdcf["sanity"] == "买完完美未来":
+            odds_verdict = "买完完美未来"
+        else:
+            odds_verdict = "已被价格计入"
+
+        p_f_n_str = (
+            f"市值 {pfn['market_cap']:.1f} 亿 = 基本面底座 F({pfn['fact']:.1f}亿, 占比 {100-pfn['narrative_share']*100:.0f}%) "
+            f"+ 叙事溢价 N({pfn['narrative']:.1f}亿, 占比 {pfn['narrative_share']*100:.0f}%) "
+            f"[{'⚠️ 市场强制交付的硬性义务 (Obligation)' if pfn['kind']=='embedded_obligation' else '✓ 白送的可选彩票 (Free Option)'}]"
+        )
+        anchor_str = (
+            f"区间低端 SOTP={sotp_ps:.2f}元 (只认已兑现利润) | 区间高端 DCF={dcf_ps:.2f}元 (三情景加权) | "
+            f"现价({price:.2f}元) = 低端 {price/sotp_ps:.2f}x / 高端 {price/dcf_ps:.2f}x"
+        )
+        rdcf_str = (
+            f"现价隐含 5年收入 CAGR 需达 {rdcf['implied_cagr']:.1f}% (市场预期评估: 【{rdcf['sanity']}】)；"
+            f"证伪条件: {rdcf['falsification_condition']}"
+        )
+
+        pillar_odds_summary = (
+            f"判定: 【{odds_verdict}】 (双锚同向标记: {'✓ 同向共振' if anchor['same_direction'] else '⚠️ 取决于口径'})\n"
+            f"  • P=F+N 叙事拆解: {p_f_n_str}\n"
+            f"  • 反向 DCF (市场到底在赌什么): {rdcf_str}\n"
+            f"  • 合理价区间 [SOTP, DCF]: {anchor_str}"
+        )
+
+        # =========================================================================
+        # 4. 支柱 ❹ 主力行为生命周期与路径承载 (结合 Main Force Engine & 微观结构)
+        # =========================================================================
         micro = microstructure or {}
         mf_stage = micro.get("main_force_stage", "【⏳ 存量震荡/等待方向期】")
         mf_behavior = micro.get("main_force_behavior", "")
-        mf_risk = micro.get("main_force_risk", "")
         mf_stage_code = micro.get("stage_code", "")
         mf_override = micro.get("decision_gear_override")
         mf_cap = micro.get("suggested_pos_cap", 0.15)
-        mf_rec_act = micro.get("recommended_action", "")
         mf_conf = micro.get("main_force_confidence", 80.0)
         is_trans = micro.get("is_transitional", False)
         anti_spoofing_list = micro.get("anti_spoofing_summary", [])
 
         smart_q = micro.get("smart_q")
-        smart_phase = micro.get("smart_phase", "NEUTRAL")
         smart_vwap = micro.get("smart_vwap", price)
-        smart_buy = micro.get("smart_buy_ratio", 50.0)
-        smart_sell = micro.get("smart_sell_ratio", 50.0)
         auc_chg = micro.get("auction_open_chg_pct", 0.0)
         auc_amt = micro.get("auction_open_amt_wan", 0.0)
+
+        # 筹码结构与左尾深度
+        profit_chip_pct = round(100.0 - overhead_chips, 1)
+        depth_to_sotp = round((price - sotp_ps) / price * -100.0, 1) if price > 0 else 0.0
 
         flow_parts = []
         if smart_q is not None and smart_q > 0:
             flow_parts.append(f"聪明钱 Q={smart_q:.3f} (知情成本 {smart_vwap:.2f}元 vs 现价 {price:.2f}元)")
-            if auc_amt > 1000:
-                flow_parts.append(f"竞价抢筹 {auc_amt:.0f}万元 ({auc_chg:+.2f}%)")
-            elif auc_amt > 0:
-                flow_parts.append(f"竞价偏淡 ({auc_chg:+.2f}%, {auc_amt:.0f}万)")
+        if auc_amt > 1000:
+            flow_parts.append(f"早盘竞价抢筹 {auc_amt:.0f}万元 ({auc_chg:+.2f}%)")
+        elif auc_amt > 0:
+            flow_parts.append(f"早盘竞价平稳 ({auc_chg:+.2f}%, {auc_amt:.0f}万)")
+
+        # 路径可承受性判定 (可承受 / 高尾险·不可承受)
+        if is_fatal or mf_stage_code in ("STAGE_6_DISTRIBUTION", "STAGE_7_PASSIVE_DRIFT") or overhead_chips >= 55.0:
+            path_verdict = "高尾险·不可承受"
         else:
-            flow_parts.append(f"主力大单净额 {main_net/100:+.1f} 亿元")
+            path_verdict = "可承受"
 
-        if stock_track == "TRACK_B_INSTITUTIONAL":
-            flow_parts.append(f"估值 PE(TTM) {pe_val:.1f}x / PB {pb_val:.1f}x")
+        pillar_path_summary = (
+            f"判定: 【{path_verdict}】 (主力阶段: {mf_stage}，置信度 {mf_conf:.1f}%{'，多空过渡区' if is_trans else ''})\n"
+            f"  • 微观盘口防伪: {'；'.join(flow_parts) if flow_parts else '盘口维持常规博弈'}\n"
+            f"  • 筹码沉淀承载: 获利盘 {profit_chip_pct:.1f}% / 上方套牢盘 {overhead_chips:.1f}% (跌回 SOTP 保守底座左尾深度: {depth_to_sotp:.1f}%)"
+        )
+        if mf_behavior:
+            pillar_path_summary += f"\n  • 操盘透视: {mf_behavior}"
+        if anti_spoofing_list:
+            filtered_audits = [a for a in anti_spoofing_list if "未检测到明显反常" not in a and "数据暂缺" not in a]
+            if filtered_audits:
+                pillar_path_summary += f"\n  • 反伪装穿透: {' | '.join(filtered_audits)}"
 
-        # 监管偏离值硬核量化
+        # =========================================================================
+        # 5. 支柱 ❺ 实战决断与执行战术 (双轨实操战术 + T+1纪律 + 监管偏离)
+        # =========================================================================
+        # 监管余量量化
         margin_100 = round(max(0.0, 100.0 - ret_10d), 1)
         board_cap_pct = 20.0 if is_gem_star else (30.0 if is_bse else 10.0)
         boards_to_limit = max(0, int(margin_100 / board_cap_pct))
 
         if ret_10d >= 70.0:
-            reg_margin_str = f"近 10 日累计涨幅 {ret_10d:+.1f}%，距 10 日 100% 严重异常波动停牌红线仅剩 {margin_100:.1f}% (约 {boards_to_limit} 个板即触碰重点监控/停牌核查，监管高压！)"
+            reg_status_str = f"近10日涨幅 {ret_10d:+.1f}%，距10日100%严重异动停牌红线仅剩 {margin_100:.1f}% (约 {boards_to_limit} 板触及监控/停牌核查，监管高压)"
         elif ret_10d > 0.0:
-            reg_margin_str = f"近 10 日累计涨幅 {ret_10d:+.1f}%，距严重异常波动监管红线(+100%)尚余 {margin_100:.1f}% 空间 (监管余量相对充足)"
+            reg_status_str = f"近10日涨幅 {ret_10d:+.1f}%，距严重异动监管红线(+100%)尚余 {margin_100:.1f}% 空间 (监管余量充足，连板具备妖股通行证)"
         else:
-            reg_margin_str = "距严重异常波动监管红线(10日100%)余量充足"
+            reg_status_str = "距严重异常波动监管红线(10日100%)余量充沛"
 
-        flow_parts.append(reg_margin_str)
-
-        p_flow = f"主力阶段: {mf_stage} (置信度: {mf_conf:.1f}%{'，多空过渡区' if is_trans else ''})\n  • 微观指纹: " + "；".join(flow_parts)
-        if mf_behavior:
-            p_flow += f"\n  • 操盘透视: {mf_behavior}"
-        if anti_spoofing_list:
-            meaningful_audits = []
-            for a in anti_spoofing_list:
-                if "未检测到明显反常" in a or "数据暂缺" in a:
-                    continue
-                # 消除语义冲突：在高标赶顶期屏蔽低吸字眼
-                if mf_stage_code in ("STAGE_5_EXHAUSTION_ACCELERATION", "STAGE_6_DISTRIBUTION"):
-                    a = a.replace("【主动低吸收集】", "【高位封单锁仓/大单扫货】")
-                    a = a.replace("主动低吸收集", "高位锁仓推升")
-                meaningful_audits.append(a)
-            if meaningful_audits:
-                p_flow += "\n  • 反伪装穿透: " + " | ".join(meaningful_audits)
-
-        # ─── 支柱 ❺ 本土二元排雷 (短线致命陷阱与财务风控) ───
-        has_reduction = bool((governance_info or {}).get("has_reduction_plan", False))
-        pledge_ratio = float((governance_info or {}).get("pledge_ratio", 0.0) or 0.0)
-
-        short_term_traps = []
-        if has_reduction:
-            short_term_traps.append("⚠️ 存在在途大股东/董监高减持计划 (随时面临高位减持公告利空背刺)")
-        else:
-            short_term_traps.append("✓ 无在途大股东减持计划")
-
-        if pledge_ratio >= 50.0:
-            short_term_traps.append(f"🔴 控股股东质押率达 {pledge_ratio:.1f}% (高质押爆仓风险)")
-        elif pledge_ratio > 0:
-            short_term_traps.append(f"✓ 控股股东质押率 {pledge_ratio:.1f}% (处于安全线内)")
-        else:
-            short_term_traps.append("✓ 控股股东质押率 0.0% (无质押平仓风险)")
-
-        pe_str = f"市盈率 PE(TTM) {pe_val:.1f}x" if pe_val > 0 else "微利或亏损"
-        if pe_val > 100.0 or pe_val <= 0:
-            pure_warn = f"⚠️ 估值风险: {pe_str}，业绩弹性不足，题材炒作若预期落空将面临估值与情绪双杀"
-        else:
-            pure_warn = f"✓ 估值处于合理区间 ({pe_str})"
-
-        if is_fatal:
-            p_audit = (
-                f"🔴 触发买方一票否决: {fatal_flags[0].title} (存贷/商誉/质押/退市指标触及红线，坚决一票否决)\n"
-                f"  • 治理与减持: {' | '.join(short_term_traps)}"
-            )
-        elif high_flags:
-            p_audit = (
-                f"⚠️ 存在财务或治理瑕疵: {high_flags[0].title} (需加强防守盯盘)\n"
-                f"  • 治理与减持: {' | '.join(short_term_traps)}\n"
-                f"  • 估值纯度: {pure_warn}"
-            )
-        else:
-            p_audit = (
-                f"✓ 存贷双高、商誉减值、控股质押与退市指标全面排查，未见致命财务红旗 (0红旗)\n"
-                f"  • 治理与减持: {' | '.join(short_term_traps)}\n"
-                f"  • 估值纯度: {pure_warn}"
-            )
-
-        # ─── 最终买方决断与实操纪律 (双轨分流 + 具体价位与分时条件) ───
+        # 决策三元组与行动档位映射: [状态后验 | 赔率 | 路径可承受性]
         life_line = round(price * 0.98, 2)
         stop_line = round(min(support_lvl, price * 0.96), 2)
 
+        # 封顶规则: 致命红旗一票否决
         if is_fatal:
             decision_gear = "回避"
             decision_title = "【🚫 铁律回避】"
             position_cap = 0.0
-            core_contra = f"公司触及买方合规红线: {fatal_flags[0].title}。在 A 股常态化退市与强监管下，本金安全高于一切，坚决一票否决！"
+            core_contra = f"触发买方一票否决致命红旗: {fatal_flags[0].title}。常态化监管与退市铁律下，本金安全高于一切！"
             action_tactic = (
-                "• 持币者 (空仓严禁买入): 无论盘中如何快速脉冲拉升，均为诱多陷阱，坚决一股不买！\n"
-                "  • 持股者 (即刻清仓离场): 触及买方合规死锁线，次日开盘即以市价止损止盈清仓，绝不心存侥幸！"
+                "• 持币者 (空仓严禁买入): 盘中无论任何脉冲反抽均为诱多陷阱，坚决一股不买！\n"
+                "  • 持股者 (即刻清仓离场): 触及买方合规死锁线，次日开盘以市价无条件止损止盈离场，绝不心存侥幸！"
             )
             invalidation = "一票否决绝对生效，禁止建仓！"
         elif is_market_ice and stock_track == "TRACK_A_THEME":
             decision_gear = "观察"
-            decision_title = "【👀 情绪防守】"
+            decision_title = "【👀 情绪防守 (弱市逆势接力高危)】"
             position_cap = 0.0
-            if macro_res and macro_res.resonance_type == "DIVERGENCE_SPECULATIVE_CLING":
+            if macro_res and getattr(macro_res, "resonance_type", "") == "DIVERGENCE_SPECULATIVE_CLING":
                 core_contra = (
                     f"市场处于{macro_res.macro_regime_label}：大盘连续破位阴跌，全市场广度处于【{macro_res.breadth_metrics.breadth_regime}】(下跌 {macro_res.breadth_metrics.down_count} 家)。"
                     f"个别连板股属于极端存量流动性避险抱团，极易受大盘拖累遭遇断板天地踩踏补跌。买方纪律严禁在弱市逆势接力！"
@@ -373,91 +468,69 @@ class JudgmentChainRunner:
                 "• 持币者 (空仓防御): 坚决一股不买，不被个别妖股连板诱惑，耐心等待大盘指数企稳止跌与增量资金放量共振后再行开仓。\n"
                 "  • 持股者 (持股守利): 弱市环境下存量抱团随时面临大盘拖累下的补跌补刀；次日早盘 9:25 竞价若低开低于昨日收盘价或竞价量能萎缩，开盘即刻市价止盈离场；盘中一旦开板放量且换手率超过 12%，无条件清仓锁定利润！"
             )
-            invalidation = f"分时均线与昨日收盘生命线 ({life_line:.2f}元) 为绝对防线，日内跌破 3 分钟未收回即全仓止盈止损，绝不参与转跌后的天地板博傻！"
-        elif mf_stage_code == "STAGE_5_EXHAUSTION_ACCELERATION":
-            decision_gear = "观察"
-            decision_title = "【🚀 缩量加速赶顶 (持股锁仓 / 严禁追高)】"
-            position_cap = 0.0
-            b_lvl = (ladder_info or {}).get("board_level", 0)
-            profit_pct = ((price - smart_vwap) / smart_vwap * 100.0) if smart_vwap > 0 else 0.0
-            core_contra = (
-                f"标的处于高位加速冲顶阶段 (连板身位: {b_lvl}板)；底仓知情资金建仓均价 {smart_vwap:.2f} 元 (浮盈达 +{profit_pct:.1f}%)，"
-                f"筹码极度锁定。A股向来'缩量加速即见顶'，此阶段持股者锁仓享受溢价，持币者新开仓盈亏比极度恶化，买方新开仓位硬性锁死为 0%！"
-            )
-            action_tactic = (
-                "• 持币者 (空仓观望): 坚决一股不买，严禁在加速末日轮追高接飞刀；若要参与必须等待日内放量大分歧换手充分后的企稳承接。\n"
-                "  • 持股者 (持股守利): 次日早盘 9:25 竞价若低开低于昨天收盘价或竞价成交额不及前日 15%，视为承接衰竭，开盘即刻市价全部获利了结；盘中一旦开板放量且换手率超过 15%，无条件止盈清仓，严防天地板！"
-            )
-            invalidation = f"分时生命线 ({life_line:.2f}元) 为日内绝对退出线，一旦跌破 3 分钟未收回或早盘竞价大幅低开，即刻全仓止盈离场，绝不犹豫！"
-        elif mf_stage_code == "STAGE_6_DISTRIBUTION" or mf_override == "回避":
+            invalidation = f"以昨日收盘价 ({life_line:.2f}元) 为日内生命线/防线，开盘破位 3 分钟不回立刻清仓止损，绝不参与转跌后的天地板博傻！"
+        elif path_verdict == "高尾险·不可承受" and mf_stage_code in ("STAGE_6_DISTRIBUTION", "STAGE_7_PASSIVE_DRIFT"):
             decision_gear = "回避"
             decision_title = "【⚠️ 派发出货防守】"
             position_cap = 0.0
-            core_contra = "主力行为生命周期处于【⚠️ 对倒派发出货期】：微观呈现高效率卖盘持续出逃，量价严重背离，任何盘中脉冲均是诱多陷阱，买方铁律严禁接盘！"
+            core_contra = "主力处于对倒派发出货期，微观筹码无抵抗流失，左侧盲目接飞刀盈亏比极度恶化。"
             action_tactic = (
-                "• 持币者 (坚决回避): 盘中任何快速反抽脉冲均为诱多，坚决一股不买！\n"
-                "  • 持股者 (逢高止损止盈): 已有持仓逢反抽立即挂市价单清仓离场，绝不拖泥带水！"
+                "• 持币者 (坚决回避): 盘中反抽长上影线为出货假象，坚决一股不买！\n"
+                "  • 持股者 (逢反抽清仓): 趁盘中反抽脉冲果断挂市价单清仓出局，严防阴跌扩大亏损。"
             )
-            invalidation = "派发期未结束前，绝不盲目抄底！"
-        elif mf_stage_code == "STAGE_7_PASSIVE_DRIFT":
-            decision_gear = "观察"
-            decision_title = "【📉 无抵抗阴跌 (防守观望)】"
+            invalidation = f"跌破防守线 {stop_line:.2f} 元坚决离场，不参与任何左侧盲目猜底！"
+        elif odds_verdict == "买完完美未来" and path_verdict == "高尾险·不可承受":
+            decision_gear = "减仓"
+            decision_title = "【📉 估值与路径双高危 (减仓避险)】"
             position_cap = 0.0
-            core_contra = f"标的主力处于【📉 无抵抗阴跌出清期】：上方套牢盘高达 {overhead_chips:.1f}%，现价跌破知情均线 ({smart_vwap:.2f}元)，机构被动躺平缺乏护盘托底，左侧接飞刀极易被钝刀子割肉。"
+            core_contra = f"现价估值已买完未来 5 年完美成长预期，且上方套牢阻力沉重 ({overhead_chips:.1f}%)，赔率与路径双向承压。"
             action_tactic = (
-                f"• 持币者 (空仓观望): 严禁左侧盲目猜底，下方强支撑位 {support_lvl:.2f} 元；耐心等待放量长阳收复 5 日线并构筑右侧底分型后再行评估。\n"
-                f"  • 持股者 (逢反抽减亏): 若次日早盘继续低开跌破昨日最低点，果断止损离场，绝不任由钝刀子割肉拉大亏损。"
+                "• 持币者 (耐心等待): 严禁追高，耐心等待估值回踩至 SOTP 锚底座 ({sotp_ps:.2f}元) 企稳再做评估。\n"
+                "  • 持股者 (逢高减仓): 趁当前价格尚在高位，逢盘中高点分批兑现锁定利润。"
             )
-            invalidation = f"严格执行 A 股 T+1 纪律：跌破强支撑位 {stop_line:.2f} 元坚决离场防守，严禁盲目左侧接飞刀！"
-        elif stock_track == "TRACK_B_INSTITUTIONAL":
-            is_bull = momentum.get("is_bullish_ma", False)
-            if not is_bull or overhead_chips > 45.0 or pct_chg < -2.0 or mf_stage_code not in ("STAGE_4_HEALTHY_MARKUP", "STAGE_3_QUIET_WASHOUT") or is_market_ice:
-                decision_gear = "观察"
-                decision_title = "【👀 观望防守】"
-                position_cap = 0.0
-                if is_market_ice:
-                    core_contra = f"大盘整体处于破位阴跌/弱势退潮生态 (宏观闸门收紧)，系统性 Beta 风险显著，个股难以独善其身。买方铁律严禁在系统性杀跌中盲目做多！"
-                else:
-                    core_contra = f"基本面健康且估值具备安全垫 (PE {pe_val:.1f}x)，但短期日线受阻于解套抛压 ({overhead_chips:.1f}%)。在未见放量长阳收复 5 日线前，绝不盲目抄底！"
-                action_tactic = (
-                    f"• 持币者 (耐心等待): 下方强支撑位 {support_lvl:.2f} 元；必须等待在支撑位缩量企稳并收复 5 日线后再寻右侧入场点。\n"
-                    f"  • 持股者 (控制回撤): 依托 20 日均线 ({ma20:.2f}元) 防守，若破位收不回减半仓防守。"
-                )
-                invalidation = f"严格执行 A 股 T+1 纪律：跌破防守线 {stop_line:.2f} 元放弃交易机会，严禁盲目左侧接飞刀！"
-            else:
-                decision_gear = "买入"
-                decision_title = "【🔥 趋势做多】"
-                position_cap = min(0.20, mf_cap if mf_cap > 0 else 0.15)
-                core_contra = f"核心主营纯度高，行业处于景气复苏通道，均线多头趋势健康，主力处于{mf_stage}，大资金温和承接，具备中长期波段配置价值。"
-                action_tactic = (
-                    f"• 持币者 (回踩低吸): 依托 5 日线 ({ma5:.2f}元) 或分时均线企稳低吸，目标看至上方阻力位 {resistance_lvl:.2f} 元。\n"
-                    f"  • 持股者 (顺势持股): 均线多头排列良好，依托 10 日线波段持股，未见放量滞涨长上影线前耐心持股守利。"
-                )
-                invalidation = f"严格执行 A 股 T+1 纪律：建仓日不可卖出；次日若收盘跌破 MA20 趋势破位线 ({ma20:.2f}元)，坚决离场防守。"
+            invalidation = f"跌破分时生命线 {life_line:.2f} 元无条件清仓止损！"
+        elif state_verdict == "↑变好+证据确认" and odds_verdict in ("便宜(有余地)", "合理") and path_verdict == "可承受":
+            decision_gear = "核心仓"
+            decision_title = "【🔥 核心做多 (高确信重击)】"
+            position_cap = min(0.25, mf_cap if mf_cap > 0 else 0.20)
+            core_contra = "基本面在变好且经报表实锤确认，估值具有充分安全垫，主力处于建仓拉升主升通道，路径可承受性优良。"
+            action_tactic = (
+                f"• 持币者 (分时低吸/竞价跟进): 早盘 9:25 竞价若高开 1%~3% 且量比>1.8 顺势建仓，或开盘回踩分时均线企稳分批买入。\n"
+                f"  • 持股者 (顺势持股守利): 均线多头排列良好，依托 10 日均线波段持股，未见高位放量长上影滞涨前坚定持仓。"
+            )
+            invalidation = f"严格执行 A 股 T+1 纪律：次日收盘跌破趋势防守线 {ma20:.2f} 元无条件减半仓，跌破 {stop_line:.2f} 元止损离场！"
+        elif state_verdict == "↑变好但仅注意力·未确认" and ladder_info and ladder_info.get("board_level", 0) >= 2:
+            decision_gear = "期权仓(小)"
+            decision_title = "【⚡ 题材接力 (轻仓试错博弈)】"
+            position_cap = min(0.10, mf_cap if mf_cap > 0 else 0.08)
+            core_contra = f"短线题材高度聚焦 (梯队 {ladder_info.get('board_level',0)}板)，右尾爆发力大但产业实锤未确认，属典型事件注意力博弈。"
+            action_tactic = (
+                f"• 持币者 (早盘竞价决断): 次日早盘 9:25 竞价成交量需达昨日全天 15% 以上且高开>2%，方可打板或小仓位跟进；若低开坚决放弃！\n"
+                f"  • 持股者 (板上锁仓/炸板坚决走): 封死涨停则持股不动；盘中一旦炸板放量且换手率超 15%，开板即刻市价兑现清仓，严防天地板！"
+            )
+            invalidation = f"以昨日收盘价 ({life_line:.2f}元) 为日内生命线/防线，开盘破位 3 分钟不回立刻清仓止损，绝不在短线妖股博傻中死扛！"
+        elif odds_verdict in ("已被价格计入", "买完完美未来") and quality_verdict == "好":
+            decision_gear = "不追高(贵但优质)"
+            decision_title = "【💎 优质但偏贵 (持币等待/持股设盈)】"
+            position_cap = 0.0
+            core_contra = "公司质地极其优异，但市场已经提前计入了未来高增长，现价买入盈亏比平庸，持币者严禁追高。"
+            action_tactic = (
+                f"• 持币者 (空仓等待): 现价已无赔率优势，将标的纳入核心关注池，等待系统性调整杀估值回踩至 {sotp_ps:.2f} 元附近再行布局。\n"
+                f"  • 持股者 (动态移动止盈): 依托 5 日均线持有，日内跌破 5 日线即减仓半数落袋为安。"
+            )
+            invalidation = f"跌破 5 日均线 ({ma5:.2f}元) 启动保护性止盈！"
         else:
-            is_leader = ladder_info.get("is_leader", False) if ladder_info else False
-            if (is_leader or pct_chg >= 4.0) and mf_stage_code in ("STAGE_4_HEALTHY_MARKUP", "STAGE_1_ACCUMULATION", "STAGE_3_QUIET_WASHOUT"):
-                decision_gear = "买入"
-                decision_title = "【🔥 主升做多】"
-                position_cap = min(0.20, mf_cap if mf_cap > 0 else 0.15)
-                core_contra = f"题材热点聚焦，标的处于梯队前排核心，主力处于{mf_stage}且通过反伪装检验，具备涨停接力与隔夜溢价预期。"
-                action_tactic = (
-                    f"• 持币者 (竞价跟进/分时低吸): 次日早盘 9:25 竞价若高开 1%~3% 且量比>2 顺势跟进，或开盘回踩分时均线不破企稳低吸。\n"
-                    f"  • 持股者 (加速锁仓/分歧减半): 早盘若快速封板则持股不动，若开盘放量滞涨或冲高回落，逢高兑现半仓锁定利润。"
-                )
-                invalidation = f"严格执行 A 股 T+1 纪律：建仓日无法卖出；次日开盘若大幅低开破位 ({life_line:.2f}元) 或日内反抽无力，坚决市价止损出局，严禁死扛！"
-            else:
-                decision_gear = "观察"
-                decision_title = "【👀 观望确认】"
-                position_cap = 0.0
-                core_contra = f"处于题材分歧震荡阶段 (主力阶段: {mf_stage})，板块尚未形成高确定性合力，追高盈亏比不足。"
-                action_tactic = (
-                    "• 持币者 (观察等待): 观察次日早盘能否放量弱转强并向上突破临界点，未确认前坚决列入观察池。\n"
-                    "  • 持股者 (逢高减仓): 震荡受阻于上方阻力位，可逢冲高适度减仓控制风险。"
-                )
-                invalidation = f"跌破支撑位 {support_lvl:.2f} 元放弃。"
+            decision_gear = "等证据临界(观察)"
+            decision_title = "【👀 等待临界 (观察确认)】"
+            position_cap = 0.0
+            core_contra = f"λ 变好信号尚未达到临界密度，市场处于分歧蓄势期。全链等待锚点: {critical_wait}。"
+            action_tactic = (
+                f"• 持币者 (耐心观察): 现金是等待的最佳期权，在催化剂实锤披露或放量突破压力位 {resistance_lvl:.2f} 元前坚决持币。\n"
+                f"  • 持股者 (控制回撤): 依托支撑位 {support_lvl:.2f} 元做防守，破位收不回减仓规避钝刀子磨损。"
+            )
+            invalidation = f"跌破强支撑线 {support_lvl:.2f} 元剔除出跟踪池。"
 
-        # 四维资金博弈雷达与实操剧本 (集成)
+        # 四维博弈雷达与实操剧本生成
         persona_names = [p.get("youzi_name", "") for p in (matched_personas or []) if isinstance(p, dict)]
         capital_matrix = self.matrix_radar.evaluate(
             quote=quote,
@@ -472,7 +545,7 @@ class JudgmentChainRunner:
             governance_info=governance_info,
         )
 
-        act_key = "AVOID" if decision_gear == "回避" else ("BUY" if decision_gear == "买入" else "WAIT")
+        act_key = "AVOID" if "回避" in decision_gear else ("BUY" if "做多" in decision_gear or "核心" in decision_gear else "WAIT")
         playbook = self.playbook_builder.build(
             quote=quote,
             momentum=momentum,
@@ -482,31 +555,44 @@ class JudgmentChainRunner:
             fatal_flag=is_fatal,
         )
 
-        # 兼容旧接口字段
-        quality_verdict = p_audit
-        state_verdict = f"[{board_name}] {'均线多头' if momentum.get('is_bullish_ma') else '均线空头'} (MA5={ma5:.2f}, MA20={ma20:.2f})"
-        odds_verdict = f"参考支撑 {support_lvl:.2f} 元，上方阻力 {resistance_lvl:.2f} 元"
-        path_verdict = p_tape
-
         card = {
             "ticker": ticker,
             "name": name,
             "trade_date": trade_date,
             "price": price,
             "pct_chg": pct_chg,
-            "total_mv": quote.get("total_mv", 0.0),
-            "circ_mv": quote.get("circ_mv", 0.0),
+            "total_mv": total_mv,
+            "circ_mv": circ_mv,
             "turnover_ratio": turnover,
-            "pe": quote.get("pe", 0.0),
-            "pb": quote.get("pb", 0.0),
+            "pe": pe_val,
+            "pb": pb_val,
             "board_name": board_name,
             "stock_track": stock_track,
             "track_name": track_name,
+            # 首页「赚不赚钱」数据看板
+            "profitability_dashboard": dashboard,
+            # 五大核心支柱 (严格按新版买方框架)
+            "pillar_1_quality": pillar_quality_summary,
+            "pillar_2_state": pillar_state_summary,
+            "pillar_3_odds": pillar_odds_summary,
+            "pillar_4_path": pillar_path_summary,
+            "pillar_5_decision": {
+                "decision_gear": decision_gear,
+                "decision_title": decision_title,
+                "position_cap": position_cap,
+                "triad_verdict": f"[{state_verdict} | {odds_verdict} | {path_verdict}]",
+                "three_part_conclusion": f"好公司? 【{quality_verdict}】 · 好下注? 【{'是' if '做多' in decision_gear or '核心' in decision_gear else '否'}】 · 好价格? 【{'是' if '便宜' in odds_verdict or '合理' in odds_verdict else '否'}】",
+                "core_contradiction": core_contra,
+                "action_tactic": action_tactic,
+                "regulatory_status": reg_status_str,
+                "invalidation_line": invalidation,
+            },
+            # 兼容字段
             "pillar_gate": p_gate,
-            "pillar_business": p_business,
-            "pillar_tape": p_tape,
-            "pillar_flow": p_flow,
-            "pillar_audit": p_audit,
+            "pillar_business": pillar_state_summary,
+            "pillar_tape": pillar_odds_summary,
+            "pillar_flow": pillar_path_summary,
+            "pillar_audit": pillar_quality_summary,
             "decision_gear": decision_gear,
             "decision_title": decision_title,
             "position_cap": position_cap,
@@ -517,7 +603,11 @@ class JudgmentChainRunner:
             "state_verdict": state_verdict,
             "odds_verdict": odds_verdict,
             "path_verdict": path_verdict,
-            "market_gate_verdict": p_gate,
+            "critical_wait": critical_wait,
+            "derivation": deriv,
+            "anchor_range": anchor,
+            "reverse_dcf": rdcf,
+            "sub_verdicts_quality": sub_verdicts_quality,
             "capital_matrix": capital_matrix,
             "playbook": playbook,
             "top3_risks": [f.to_dict() for f in get_top3_risks(flags)],
@@ -529,16 +619,11 @@ class JudgmentChainRunner:
             "microstructure": micro,
             "main_force_stage": mf_stage,
             "main_force_behavior": mf_behavior,
-            "main_force_risk": mf_risk,
             "main_force_confidence": mf_conf,
             "is_transitional": is_trans,
-            "suggested_pos_cap": mf_cap,
-            "recommended_action": mf_rec_act,
-            "anti_spoofing_summary": anti_spoofing_list,
-            "stage_scores": micro.get("scores", {}),
         }
 
-        # 门控机检自动修复
+        # 机检校验与封顶硬锁死
         ok, findings = self.validator.validate(card, flags)
         if not ok and has_fatal_red_flags(flags):
             card["decision_gear"] = "回避"

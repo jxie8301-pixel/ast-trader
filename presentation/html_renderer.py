@@ -359,28 +359,49 @@ def render_decision_card_html(card: dict[str, Any], output_path: str | None = No
             </div>
         </section>
 
+        <!-- 2.5 首页「赚不赚钱」数据看板 -->
+        <section class="section-card">
+            <h2>📊 首页「赚不赚钱」数据看板</h2>
+            <div style="margin-bottom:12px; font-size:13px; color:var(--text-dim);">
+                {html.escape(card.get('profitability_dashboard', {}).get('industry_reason', ''))}
+            </div>
+            <table class="table">
+                <thead>
+                    <tr>
+                        <th style="width: 180px;">核心指标</th>
+                        <th style="width: 120px;">最新数值</th>
+                        <th style="width: 220px;">多期趋势与状态</th>
+                        <th>避坑警示与主营穿透 (Note)</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {''.join([f"<tr><td><strong>{html.escape(ind.get('name',''))}</strong></td><td style='font-size:16px; font-weight:700; color:#38bdf8;'>{html.escape(ind.get('value',''))}</td><td>[{html.escape(ind.get('status','✓'))}] {html.escape(ind.get('trend',''))}</td><td style='color:#cbd5e1; font-size:12px;'>{html.escape(ind.get('note','') or '—')}</td></tr>" for ind in card.get('profitability_dashboard', {}).get('indicators', [])])}
+                </tbody>
+            </table>
+        </section>
+
         <!-- 3. A股五维实盘支柱 -->
         <section class="section-card">
             <h2>📊 A股五维实盘量化投研支柱 (Five Pillars)</h2>
             <div class="pillar-card" style="border-left-color: #38bdf8;">
-                <div class="pillar-title">❶ 宏观闸门 / 情绪周期</div>
-                <div class="pillar-content">{html.escape(card.get('pillar_gate', '未接入'))}</div>
+                <div class="pillar-title">❶ 是不是好公司？(质地五问 · 铁门筛选)</div>
+                <div class="pillar-content" style="white-space: pre-wrap;">{html.escape(card.get('pillar_1_quality') or card.get('pillar_gate') or '未接入')}</div>
             </div>
             <div class="pillar-card" style="border-left-color: #818cf8;">
-                <div class="pillar-title">❷ 业务纯度 / 题材身位</div>
-                <div class="pillar-content">{html.escape(card.get('pillar_business', '未接入'))}</div>
+                <div class="pillar-title">❷ 在变好吗？(状态跃迁 λ · 稀疏事件与全链唯一「该等什么」)</div>
+                <div class="pillar-content" style="white-space: pre-wrap;">{html.escape(card.get('pillar_2_state') or card.get('pillar_business') or '未接入')}</div>
             </div>
             <div class="pillar-card" style="border-left-color: #f59e0b;">
-                <div class="pillar-title">❸ 筹码阻力 / 封板生态</div>
-                <div class="pillar-content">{html.escape(card.get('pillar_tape', '未接入'))}</div>
+                <div class="pillar-title">❸ 贵不贵？(P=F+N 叙事溢价拆解 · 反向DCF · [SOTP, DCF]双锚)</div>
+                <div class="pillar-content" style="white-space: pre-wrap;">{html.escape(card.get('pillar_3_odds') or card.get('pillar_tape') or '未接入')}</div>
             </div>
             <div class="pillar-card" style="border-left-color: #10b981;">
-                <div class="pillar-title">❹ 资金动向 / 监管余量</div>
-                <div class="pillar-content">{html.escape(card.get('pillar_flow', '未接入'))}</div>
+                <div class="pillar-title">❹ 主力行为生命周期与路径承载 (7阶段微观穿透与筹码承载)</div>
+                <div class="pillar-content" style="white-space: pre-wrap;">{html.escape(card.get('pillar_4_path') or card.get('pillar_flow') or '未接入')}</div>
             </div>
             <div class="pillar-card" style="border-left-color: #ef4444;">
-                <div class="pillar-title">❺ 本土排雷 (二元风控)</div>
-                <div class="pillar-content">{html.escape(card.get('pillar_audit', '未接入'))}</div>
+                <div class="pillar-title">❺ 实战决断与执行战术 (双轨实操战术 · T+1防线)</div>
+                <div class="pillar-content" style="white-space: pre-wrap;"><strong>决断: {html.escape(card.get('decision_title', ''))}</strong>\n{html.escape(card.get('action_tactic', ''))}\n防线: {html.escape(invalidation)}</div>
             </div>
         </section>
 
