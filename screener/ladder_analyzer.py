@@ -44,6 +44,9 @@ class MarketSentimentOverview:
     total_limit_up_count: int
     sentiment_phase: str  # 启动, 发酵, 高潮, 分歧, 修复, 退潮
     strongest_themes: list[ThemeAggregate]
+    total_limit_down_count: int = 0
+    total_broken_count: int = 0
+    broken_rate_pct: float = 0.0
 
 
 class LadderAnalyzer:
@@ -68,6 +71,9 @@ class LadderAnalyzer:
                     total_limit_up_count=0,
                     sentiment_phase="未知",
                     strongest_themes=[],
+                    total_limit_down_count=0,
+                    total_broken_count=0,
+                    broken_rate_pct=0.0,
                 ), {}, []
 
         raw_rows = []
@@ -84,12 +90,39 @@ class LadderAnalyzer:
         parsed_rows: list[LadderRow] = []
         space_board_level = 0
         space_board_tickers = []
-
         theme_groups: dict[str, list[dict[str, Any]]] = defaultdict(list)
 
+        # ── 区分封板涨停 (limit_up)、日内炸板 (broken) 与跌停 (limit_down) ──
+        limit_up_rows = []
+        broken_rows = []
+        limit_down_rows = []
+
         for r in lad.rows:
-            bl = r.board_level or r.consecutive_limit_days or 1
-            hbl = r.highest_board_level or bl
+            st = getattr(r, "status", None)
+            if st == "limit_up":
+                limit_up_rows.append(r)
+            elif st == "broken":
+                broken_rows.append(r)
+            elif st == "limit_down":
+                limit_down_rows.append(r)
+            else:
+                bl = getattr(r, "board_level", None)
+                if bl is not None and bl > 0:
+                    limit_up_rows.append(r)
+                elif getattr(r, "broken_count", 0) and r.broken_count > 0:
+                    broken_rows.append(r)
+                else:
+                    limit_down_rows.append(r)
+
+        total_zt = len(limit_up_rows)
+        total_dt = len(limit_down_rows)
+        total_broken = len(broken_rows)
+        total_attempt = total_zt + total_broken
+        broken_rate_pct = round((total_broken / total_attempt * 100.0), 1) if total_attempt > 0 else 0.0
+
+        for r in limit_up_rows:
+            bl = getattr(r, "board_level", None) or getattr(r, "consecutive_limit_days", None) or 1
+            hbl = getattr(r, "highest_board_level", None) or bl
             if hbl > space_board_level:
                 space_board_level = hbl
 
@@ -98,17 +131,17 @@ class LadderAnalyzer:
                 "full_code": r.full_code,
                 "name": r.name,
                 "board_level": int(bl),
-                "broken_count": int(r.broken_count or 0),
-                "seal_amount": float(r.seal_amount or 0.0),
-                "limit_time": r.limit_time or "09:30:00",
-                "limit_reason": (r.limit_reason or r.industry or "未知题材").strip(),
-                "industry": (r.industry or "其他").strip(),
+                "broken_count": int(getattr(r, "broken_count", 0) or 0),
+                "seal_amount": float(getattr(r, "seal_amount", 0.0) or 0.0),
+                "limit_time": getattr(r, "limit_time", None) or "09:30:00",
+                "limit_reason": (getattr(r, "limit_reason", None) or getattr(r, "industry", None) or "未知题材").strip(),
+                "industry": (getattr(r, "industry", None) or "其他").strip(),
                 "highest_board_level": int(hbl),
             }
             raw_rows.append(row_dict)
             parsed_rows.append(LadderRow(**row_dict))
 
-            # 聚合题材
+            # 聚合题材 (仅聚合真实封板涨停)
             theme_key = row_dict["limit_reason"]
             theme_groups[theme_key].append(row_dict)
 
@@ -139,18 +172,18 @@ class LadderAnalyzer:
         # 题材按涨停家数、总封单资金排序
         theme_aggs.sort(key=lambda t: (-t.count, -t.total_seal_amount))
 
-        # 评估市场短线情绪周期
-        total_zt = len(raw_rows)
-        # 简单周期研判：
-        # space >= 5 且 2板晋级率 > 30% -> 发酵/高潮
-        # space <= 3 且 晋级率 < 20% -> 冰点/分歧
-        # total_zt > 60 -> 情绪偏暖
-        if space_board_level >= 5 and total_zt >= 50:
-            phase = "主升发酵期" if promotion_rates.get(space_board_level, 0.0) >= 0.3 else "高位分歧期"
-        elif space_board_level >= 3 and total_zt >= 40:
-            phase = "中位加速期"
-        elif space_board_level <= 2:
+        # 综合情绪水温研判 (融入跌停与炸板率压制)
+        if total_dt >= 15 or (total_dt >= 10 and broken_rate_pct >= 35.0):
+            if space_board_level >= 4:
+                phase = "高位分歧期"  # 妖股锁仓博傻，后排大面积跌停踩踏
+            else:
+                phase = "退潮分歧期"  # 情绪全线退潮
+        elif total_zt <= 25 or (space_board_level <= 2 and total_dt >= 8):
             phase = "混沌冰点期"
+        elif space_board_level >= 5 and total_zt >= 40 and total_dt <= 8 and broken_rate_pct < 30.0:
+            phase = "主升发酵期"
+        elif space_board_level >= 3 and total_zt >= 35 and total_dt <= 10:
+            phase = "中位加速期"
         else:
             phase = "震荡轮动期"
 
@@ -163,6 +196,9 @@ class LadderAnalyzer:
             total_limit_up_count=total_zt,
             sentiment_phase=phase,
             strongest_themes=theme_aggs[:5],
+            total_limit_down_count=total_dt,
+            total_broken_count=total_broken,
+            broken_rate_pct=broken_rate_pct,
         )
 
         # 构建个股题材上下文映射 (code -> context)

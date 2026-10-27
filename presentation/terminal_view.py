@@ -91,7 +91,7 @@ def print_screener_table(result_obj: Any, mode: str = "close") -> None:
         space_tickers = "、".join(overview.space_board_tickers) if overview.space_board_tickers else "无"
 
         ladder_lines = [
-            f"[bold]交易日期:[/bold] {overview.trade_date}  |  [bold]市场短线情绪水温:[/bold] [bold red]{overview.sentiment_phase}[/bold red]  |  [bold]全天涨停总数:[/bold] {overview.total_limit_up_count} 家",
+            f"[bold]交易日期:[/bold] {overview.trade_date}  |  [bold]市场情绪水温:[/bold] [bold red]{overview.sentiment_phase}[/bold red]  |  [bold]涨停:[/bold] [bold red]{overview.total_limit_up_count}[/bold red]家 / [bold]跌停:[/bold] [bold green]{overview.total_limit_down_count}[/bold green]家 / [bold]炸板:[/bold] [bold yellow]{overview.total_broken_count}[/bold yellow]家 (炸板率 {overview.broken_rate_pct:.1f}%)",
             f"[bold]连板天梯分布:[/bold] {ladder_desc}",
             f"[bold]核心梯队晋级率:[/bold] {promo_desc if promo_desc else '首板为主'}",
             f"[bold]空间高度龙头:[/bold] [bold yellow]{overview.space_board_level} 板[/bold yellow] -> {space_tickers}",

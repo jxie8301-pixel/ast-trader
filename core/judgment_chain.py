@@ -97,11 +97,17 @@ class JudgmentChainRunner:
             space = getattr(sentiment_overview, "space_board_level", 0)
             tickers = "、".join(getattr(sentiment_overview, "space_board_tickers", [])[:2]) or "无"
             zt_count = getattr(sentiment_overview, "total_limit_up_count", 0)
-            if phase in ("混沌冰点期", "退潮期", "高位分歧期"):
+            dt_count = getattr(sentiment_overview, "total_limit_down_count", 0)
+            bk_count = getattr(sentiment_overview, "total_broken_count", 0)
+            bk_rate = getattr(sentiment_overview, "broken_rate_pct", 0.0)
+
+            stats_str = f"涨停 {zt_count}家 / 跌停 {dt_count}家 / 炸板 {bk_count}家 (炸板率 {bk_rate:.1f}%)"
+
+            if dt_count >= 15 or bk_rate >= 35.0 or phase in ("混沌冰点期", "退潮分歧期", "高位分歧期"):
                 is_market_ice = True
-                p_gate = f"⚠️ 情绪闸门收紧 (市场处于【{phase}】，空间板 {space}板 [{tickers}]，全市场涨停仅 {zt_count}家，亏钱效应显著，短线强制防守)"
+                p_gate = f"⚠️ 情绪闸门收紧 (市场处于【{phase}】，空间板 {space}板 [{tickers}]，{stats_str}，后排亏钱效应扩散，短线防守控仓)"
             else:
-                p_gate = f"✓ 情绪闸门放行 (市场处于【{phase}】，空间板 {space}板 [{tickers}]，涨停 {zt_count}家，短线情绪具备赚钱效应)"
+                p_gate = f"✓ 情绪闸门放行 (市场处于【{phase}】，空间板 {space}板 [{tickers}]，{stats_str}，短线情绪具备赚钱效应)"
 
         # ─── 支柱 ❷ 业务纯度 / 题材身位 ───
         main_biz = (governance_info or {}).get("main_business", [])
