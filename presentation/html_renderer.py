@@ -52,8 +52,29 @@ def render_decision_card_html(card: dict[str, Any], output_path: str | None = No
     if not risk_rows:
         risk_rows = '<tr><td colspan="4" style="text-align:center; color:#38a169; padding:20px;">✓ 审计与治理指标全面通过，未触发任何严重排雷红旗</td></tr>'
 
-    # 游资席位渲染
+    # 游资战法与席位渲染 (融合 UZI 24 战法与真实席位)
+    personas = card.get("matched_personas", [])
     youzi_rows = ""
+    for p in personas[:4]:
+        name_p = p.get("youzi_name", "")
+        style_p = p.get("style", "")
+        score_p = p.get("fit_score", 0)
+        entry_p = p.get("entry_condition", "")
+        inval_p = p.get("invalidation", "")
+        youzi_rows += f"""
+        <div class="youzi-card">
+            <div class="youzi-header">
+                <span class="youzi-name">⚡ 契合战法: {html.escape(name_p)}</span>
+                <span class="youzi-tier" style="background:#b91c1c">契合度 {score_p}分</span>
+            </div>
+            <div class="youzi-body">
+                <div><strong>核心风格:</strong> {html.escape(style_p)}</div>
+                <div><strong>进场信号:</strong> {html.escape(entry_p)}</div>
+                <div><strong>逻辑证伪:</strong> <span style="color:#f87171">{html.escape(inval_p)}</span></div>
+            </div>
+        </div>
+        """
+
     for y in youzi:
         styles = ", ".join(y.get("styles", []))
         level = y.get("level", "主力")
@@ -61,7 +82,7 @@ def render_decision_card_html(card: dict[str, Any], output_path: str | None = No
         youzi_rows += f"""
         <div class="youzi-card">
             <div class="youzi-header">
-                <span class="youzi-name">{html.escape(y.get('youzi_name', ''))}</span>
+                <span class="youzi-name">🏛️ 上榜席位: {html.escape(y.get('youzi_name', ''))}</span>
                 <span class="youzi-tier" style="background:{tag_color}">{level}</span>
             </div>
             <div class="youzi-body">
@@ -71,7 +92,7 @@ def render_decision_card_html(card: dict[str, Any], output_path: str | None = No
         </div>
         """
     if not youzi_rows:
-        youzi_rows = '<div style="color:#718096; padding: 15px;">近期未见知名一线游资或机构上榜，属于普通游资或散户资金盘</div>'
+        youzi_rows = '<div style="color:#718096; padding: 15px;">当前盘口未触发一线游资战法模型，亦未见一线游资席位上榜</div>'
 
     html_content = f"""<!DOCTYPE html>
 <html lang="zh-CN">

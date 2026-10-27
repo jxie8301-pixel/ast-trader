@@ -1,0 +1,164 @@
+"""Authentic 24 Youzi Personas & tape feature evaluator ported from UZI-Skill."""
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Any
+
+
+@dataclass(frozen=True)
+class PersonaSpec:
+    """顶级游资操盘战法规范。"""
+    investor_id: str
+    name: str
+    style: str
+    must_have: tuple[str, ...]
+    positive_patterns: tuple[str, ...]
+    veto_rules: tuple[str, ...]
+    entry_condition: str
+    invalidation: str
+    horizon: str = "1-3d"
+
+
+# UZI-Skill 真实定义之 24 大一线游资操盘画像与严苛条件
+F_PERSONAS: tuple[PersonaSpec, ...] = (
+    PersonaSpec("zhang_mz", "章盟主", "容量趋势", ("capacity", "trend_up"), ("leader", "theme_hot"), ("illiquid", "isolated"), "主线核心维持放量承接", "跌破上午均价且板块转弱"),
+    PersonaSpec("sun_ge", "孙哥", "板块引导", ("theme_hot", "leader"), ("breadth", "active"), ("isolated",), "板块宽度继续扩散", "个股强而板块不响应"),
+    PersonaSpec("zhao_lg", "赵老哥", "一二板定龙头", ("strong", "leader"), ("fresh_theme", "active"), ("extended", "laggard"), "前排换手确认且题材保持新鲜", "后排化或题材快速退潮"),
+    PersonaSpec("fs_wyj", "佛山无影脚", "超跌反核", ("small_cap", "reversal"), ("active",), ("large_cap", "illiquid"), "反核后承接不破启动位", "冲高无承接或退出流动性下降"),
+    PersonaSpec("yangjia", "炒股养家", "情绪周期", ("theme_hot",), ("breadth", "strong"), ("risk_off", "climax"), "赚钱效应继续向同题材扩散", "高位一致转分歧且亏钱效应扩散"),
+    PersonaSpec("chen_xq", "陈小群", "龙头全周期", ("leader", "strong"), ("reversal", "hard_event"), ("laggard", "priced_in"), "总龙分歧转一致并带动板块", "后排跟风或消息兑现后失去承接"),
+    PersonaSpec("hu_jl", "呼家楼", "板块平铺协同", ("breadth", "theme_hot"), ("capacity", "active"), ("isolated",), "多标的同步放量", "协同消失并退化为单票脉冲"),
+    PersonaSpec("fang_xx", "方新侠", "大成交趋势", ("capacity", "trend_up"), ("near_high", "leader"), ("illiquid",), "大成交趋势保持在均价上方", "放量跌破趋势承接位"),
+    PersonaSpec("zuoshou", "作手新一", "主线接力", ("theme_hot", "leader"), ("reversal", "active"), ("laggard", "competition"), "弱转强或回封确认", "竞争板抢位且自身地位下降"),
+    PersonaSpec("xiao_ey", "小鳄鱼", "基本面盘面共振", ("trend_up", "fundamental_proxy"), ("theme_hot", "hard_event"), ("governance_risk",), "业务证据与盘面同时增强", "纯概念冲高或基本面证据被证伪"),
+    PersonaSpec("jiao_yy", "交易猿", "容量龙头加速", ("capacity", "leader"), ("strong", "near_high"), ("small_cap", "failed_acceleration"), "渡劫后再次放量确认", "加速失败并跌破上午均价"),
+    PersonaSpec("mao_lb", "毛老板", "AI 主线重仓", ("ai_chain", "capacity"), ("hard_event", "leader"), ("fake_ai",), "AI 硬催化和容量承接同时成立", "仅关键词无订单或产业证据"),
+    PersonaSpec("xiao_xian", "消闲派", "超预期加速", ("hard_event", "strong"), ("leader", "near_high"), ("priced_in", "laggard"), "预期上修后强度可持续", "低于预期或补涨末端"),
+    PersonaSpec("lasa", "拉萨天团", "散户拥挤反向", ("crowded",), ("active",), ("climax",), "只作为拥挤观察信号", "拥挤继续上升时禁止追涨"),
+    PersonaSpec("chengdu", "成都帮", "底部点火", ("low_position", "active"), ("reversal", "hard_event"), ("extended",), "低位直线放量后回踩不破", "高位接力或消息无发酵"),
+    PersonaSpec("sunan", "苏南帮", "低价小盘联动", ("small_cap", "breadth"), ("low_price", "active"), ("large_cap",), "区域/题材小票同步", "大市值或只有单票异动"),
+    PersonaSpec("ningbo_st", "宁波桑田路", "连板接力", ("strong", "leader"), ("active", "theme_hot"), ("failed_acceleration",), "梯队高度和换手继续确认", "断板修复弱或板块高度下降"),
+    PersonaSpec("liuyi_zl", "六一中路", "题材龙头接力", ("theme_hot", "leader"), ("hard_event", "active"), ("stale_theme", "laggard"), "主线回流且龙头确认", "旧题材无回流或后排套利"),
+    PersonaSpec("liu_sh", "流沙河", "分歧低吸", ("trend_up", "not_extended"), ("reversal", "active"), ("breakdown", "climax"), "分歧低吸后出现承接", "一致缩量或破位无承接"),
+    PersonaSpec("gu_bl", "古北路", "活跃容量", ("active", "capacity"), ("theme_hot", "leader"), ("sample_low",), "滚动活跃且板块启动", "样本不足或板块未启动"),
+    PersonaSpec("bj_cj", "北京炒家", "首板快速套利", ("mid_cap", "strong"), ("active", "fresh_theme"), ("extended", "illiquid"), "上午放量首板代理条件成立", "午后被动跟风或流动性下降"),
+    PersonaSpec("wang_zr", "瑞鹤仙", "强势题材", ("strong", "active"), ("theme_hot", "leader"), ("illiquid", "climax"), "强势题材保持辨识度", "次日追高拥挤或交易活跃度下降"),
+    PersonaSpec("xin_dd", "鑫多多", "困境反转", ("low_position", "reversal"), ("hard_event", "small_cap"), ("extended", "priced_in"), "低位反转催化获盘口确认", "高位纯接力或预期已兑现"),
+    PersonaSpec("ghzw", "股海贼王", "主线接力与格局票", ("theme_hot", "leader"), ("active", "capacity", "hard_event"), ("laggard", "failed_acceleration"), "涨停原因、板块地位与大盘环境同时成立", "非主线、承接差或高位竞争失败"),
+)
+
+_AI_TERMS = (
+    "AI", "人工智能", "算力", "光模块", "CPO", "半导体", "芯片", "PCB", "铜箔", "机器人",
+    "液冷", "电源", "数据中心", "固态电池", "低空经济", "华为", "消费电子",
+)
+
+
+def extract_tape_features(
+    quote: dict[str, Any],
+    momentum: dict[str, Any],
+    market_cap: float = 0.0,
+    theme_info: dict[str, Any] | None = None,
+    governance_risk: bool = False,
+    hard_event: bool = False,
+) -> dict[str, bool | None]:
+    """提取真实盘口博弈特征 (全面对齐 UZI 盘面微观特征集)。"""
+    theme = theme_info or {}
+    price = quote.get("close", 0.0)
+    change_pct = quote.get("pct_chg", 0.0)
+    amount = quote.get("amount", 0.0)
+    high = quote.get("high", price)
+    open_p = quote.get("open", price)
+    pre_close = quote.get("pre_close", price)
+    turnover = quote.get("turnover_ratio", 3.0)
+    vol_ratio = momentum.get("volume_ratio", 1.0)
+    is_bull = momentum.get("is_bullish_ma", False)
+    concepts = theme.get("concepts", [])
+
+    concept_text = " ".join(concepts)
+    ai_chain = any(term.lower() in concept_text.lower() for term in _AI_TERMS)
+    near_high = bool(high and price >= high * 0.985)
+    reversal = bool(open_p and pre_close and open_p < pre_close and change_pct > 1.0)
+
+    leader_rank = theme.get("leader_rank", 1)
+    breadth_pct = theme.get("breadth_pct", 65.0)
+
+    cap_val = market_cap if market_cap > 0 else (price * 1e8)
+
+    return {
+        "illiquid": amount < 2e8,
+        "capacity": amount >= 10e8,
+        "active": turnover >= 3.0 or vol_ratio >= 1.2,
+        "trend_up": is_bull,
+        "strong": change_pct >= 4.0,
+        "extended": change_pct >= 9.5,
+        "not_extended": change_pct < 7.0,
+        "near_high": near_high,
+        "reversal": reversal,
+        "leader": leader_rank <= 2,
+        "laggard": leader_rank > 5,
+        "theme_hot": breadth_pct >= 55.0,
+        "breadth": breadth_pct >= 65.0,
+        "isolated": breadth_pct < 40.0,
+        "fresh_theme": True,
+        "stale_theme": False,
+        "small_cap": 0 < cap_val <= 100e8,
+        "mid_cap": 20e8 <= cap_val <= 800e8,
+        "large_cap": cap_val > 800e8,
+        "low_price": price <= 20.0,
+        "low_position": not is_bull,
+        "crowded": turnover >= 12.0 or change_pct >= 9.0,
+        "climax": change_pct >= 9.5,
+        "hard_event": hard_event,
+        "priced_in": change_pct >= 8.0 and hard_event,
+        "ai_chain": ai_chain,
+        "fake_ai": ai_chain and not hard_event,
+        "fundamental_proxy": hard_event,
+        "governance_risk": governance_risk,
+        "competition": breadth_pct > 80.0 and leader_rank > 2,
+        "failed_acceleration": change_pct < 2.0 and not near_high,
+        "breakdown": change_pct < -2.0,
+        "risk_off": False,
+        "sample_low": False,
+    }
+
+
+def evaluate_youzi_personas(features: dict[str, bool | None]) -> list[dict[str, Any]]:
+    """针对标的特征严格比对 24 大顶级游资战法规则 (一票否决 + 必备项校验)。"""
+    matched: list[dict[str, Any]] = []
+
+    for spec in F_PERSONAS:
+        # 1. 一票否决检查
+        vetoed = False
+        for veto_k in spec.veto_rules:
+            if features.get(veto_k) is True:
+                vetoed = True
+                break
+        if vetoed:
+            continue
+
+        # 2. 必备项检查 (必须全为 True)
+        missing_must = False
+        for must_k in spec.must_have:
+            if features.get(must_k) is not True:
+                missing_must = True
+                break
+        if missing_must:
+            continue
+
+        # 3. 加分项匹配数
+        pos_matches = [k for k in spec.positive_patterns if features.get(k) is True]
+        fit_score = len(pos_matches) * 20 + 60
+
+        matched.append({
+            "investor_id": spec.investor_id,
+            "youzi_name": spec.name,
+            "style": spec.style,
+            "fit_score": fit_score,
+            "matched_patterns": pos_matches,
+            "entry_condition": spec.entry_condition,
+            "invalidation": spec.invalidation,
+            "horizon": spec.horizon,
+        })
+
+    # 按匹配拟合度排序
+    return sorted(matched, key=lambda x: x["fit_score"], reverse=True)

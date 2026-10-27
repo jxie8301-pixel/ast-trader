@@ -30,6 +30,7 @@ from core.game_features import GameFeatureExtractor
 from core.judgment_chain import JudgmentChainRunner
 from core.seat_matcher import SeatMatcher
 from core.trap_detector import TrapDetector
+from core.youzi_personas import evaluate_youzi_personas, extract_tape_features
 from data.eltdx_client import normalize_code
 from data.eltdx_collector import EltdxCollector
 from data.supplement_api import fetch_lhb_seats
@@ -82,7 +83,18 @@ def run_analyze(ticker_input: str, html_output: str | None = None) -> None:
     detector = TrapDetector()
     trap_score, trap_warnings = detector.evaluate(ts_code, gov_info.get("concepts", []))
 
-    # 5. 五节点判断链装配
+    # 5. 24 顶级游资战法特征提取与严苛匹配 (全面对齐 UZI F_PERSONAS)
+    tape_features = extract_tape_features(
+        quote=quote,
+        momentum=momentum,
+        market_cap=quote.get("amount", 0.0) * 15.0,
+        theme_info={"concepts": gov_info.get("concepts", [])},
+        governance_risk=any(f.level == "🔴" for f in flags),
+        hard_event=len(gov_info.get("concepts", [])) > 0,
+    )
+    matched_personas = evaluate_youzi_personas(tape_features)
+
+    # 6. 五节点判断链装配
     runner = JudgmentChainRunner()
     card = runner.run(
         ticker=ts_code,
@@ -93,6 +105,7 @@ def run_analyze(ticker_input: str, html_output: str | None = None) -> None:
         flags=flags,
         matched_youzi=matched_youzi,
         trap_warnings=trap_warnings,
+        matched_personas=matched_personas,
     )
 
     # 6. 渲染终端决断卡

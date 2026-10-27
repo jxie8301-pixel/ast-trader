@@ -49,27 +49,30 @@ class AuditEngine:
         # 4. Sloan Accrual Anomaly (高应计异象)
         flags.extend(self._check_sloan(balance_df, income_df, cashflow_df))
 
-        # 5. Buffett Quality (现金流含金量)
+        # 5. DuPont ROE 归因与恶化预警
+        flags.extend(self._check_dupont(balance_df, income_df))
+
+        # 6. Buffett Quality (现金流含金量、剪刀差与非经占比)
         flags.extend(self._check_buffett_quality(balance_df, income_df, cashflow_df))
 
-        # 6. 主营业务侵蚀 (投资收益占营业利润过高)
+        # 7. 主营业务侵蚀 (投资收益占营业利润过高)
         flags.extend(self._check_invest_income_erosion(income_df))
 
-        # 7. 治理风险 (高比例质押、大额减持)
+        # 8. 治理风险 (高比例质押、大额减持)
         if governance_info:
             flags.extend(self._check_governance(governance_info))
 
-        # 8. 长期股权投资与关联方敞口
+        # 9. 长期股权投资与关联方敞口
         flags.extend(self._check_lt_equity_exposure(balance_df))
 
-        # 9. 估值透支警报
+        # 10. 估值透支警报
         if quote_info:
             flags.extend(self._check_valuation(balance_df, income_df, quote_info))
 
-        # 10. 商誉与资产减值黑天鹅排查
+        # 11. 商誉与资产减值黑天鹅排查
         flags.extend(self._check_goodwill_impairment(balance_df))
 
-        # 11. 股东户数变动与筹码散户化
+        # 12. 股东户数变动与筹码散户化
         if governance_info:
             flags.extend(self._check_shareholder_dispersion(governance_info))
 
@@ -309,16 +312,79 @@ class AuditEngine:
         return flags
 
     # ─────────────────────────────────────────────────────────────
-    # 5. Buffett Quality (现金流真实性)
+    # 5. DuPont ROE 分解与急剧恶化排查 (对齐 Ashare DuPont 模型)
+    # ─────────────────────────────────────────────────────────────
+    def _check_dupont(self, bs: pd.DataFrame, inc: pd.DataFrame) -> list[RedFlagItem]:
+        flags = []
+        if len(inc) < 2 or len(bs) < 2:
+            return flags
+
+        y_now, y_prev = inc.iloc[-1], inc.iloc[-2]
+        b_now, b_prev = bs.iloc[-1], bs.iloc[-2]
+
+        rev_now = _safe_float(y_now.get("revenue")) or 0.0
+        ni_now = _safe_float(y_now.get("n_income")) or 0.0
+        ta_now = _safe_float(b_now.get("total_assets")) or 0.0
+        te_now = _safe_float(b_now.get("total_equity")) or 0.0
+
+        rev_prev = _safe_float(y_prev.get("revenue")) or 0.0
+        ni_prev = _safe_float(y_prev.get("n_income")) or 0.0
+        ta_prev = _safe_float(b_prev.get("total_assets")) or 0.0
+        te_prev = _safe_float(b_prev.get("total_equity")) or 0.0
+
+        if rev_now > 0 and ta_now > 0 and te_now > 0 and rev_prev > 0 and ta_prev > 0 and te_prev > 0:
+            nm_now = ni_now / rev_now
+            at_now = rev_now / ta_now
+            lev_now = ta_now / te_now
+            roe_now = nm_now * at_now * lev_now
+
+            nm_prev = ni_prev / rev_prev
+            at_prev = rev_prev / ta_prev
+            lev_prev = ta_prev / te_prev
+            roe_prev = nm_prev * at_prev * lev_prev
+
+            # ROE 急剧恶化 (同比下滑 > 10 个百分点)
+            if (roe_prev - roe_now) > 0.10:
+                flags.append(RedFlagItem(
+                    id=make_flag_id("DuPont", "roe_severe_deterioration"),
+                    framework="DuPont Analysis",
+                    level=LEVEL_FATAL,
+                    title="盈利能力系统性崩塌 (DuPont ROE 同比暴跌 > 10pp)",
+                    value=round((roe_prev - roe_now) * 100, 1),
+                    threshold="降幅 > 10pp",
+                    evidence=f"ROE由 {roe_prev*100:.1f}% 崩塌至 {roe_now*100:.1f}% (净利率由 {nm_prev*100:.1f}% 降至 {nm_now*100:.1f}%)",
+                    node="quality",
+                ))
+            elif nm_now < 0.02 and lev_now > 3.0:
+                flags.append(RedFlagItem(
+                    id=make_flag_id("DuPont", "high_leverage_low_margin"),
+                    framework="DuPont Analysis",
+                    level=LEVEL_HIGH,
+                    title="高杠杆虚胖型 ROE (净利率不足 2% 纯靠杠杆支撑)",
+                    value=round(lev_now, 2),
+                    threshold="杠杆乘数 > 3.0 & 净利率 < 2%",
+                    evidence=f"权益乘数={lev_now:.2f}倍，净利率仅={nm_now*100:.2f}%",
+                    node="quality",
+                ))
+
+        return flags
+
+    # ─────────────────────────────────────────────────────────────
+    # 6. Buffett Quality (全面对齐 Ashare: 剪刀差、现金覆盖与非经占比)
     # ─────────────────────────────────────────────────────────────
     def _check_buffett_quality(self, bs: pd.DataFrame, inc: pd.DataFrame, cf: pd.DataFrame) -> list[RedFlagItem]:
         flags = []
-        if inc.empty or cf.empty:
+        if inc.empty or cf.empty or bs.empty:
             return flags
 
-        ni = _safe_float(inc.iloc[-1].get("n_income")) or 0.0
-        cfo = _safe_float(cf.iloc[-1].get("n_cashflow_act")) or 0.0
+        y_now = inc.iloc[-1]
+        b_now = bs.iloc[-1]
+        c_now = cf.iloc[-1]
 
+        ni = _safe_float(y_now.get("n_income")) or 0.0
+        cfo = _safe_float(c_now.get("n_cashflow_act")) or 0.0
+
+        # 1. 经营现金流与净利润背离
         if ni > 0 and cfo < 0:
             flags.append(RedFlagItem(
                 id=make_flag_id("Buffett", "cfo_negative_while_profitable"),
@@ -341,6 +407,69 @@ class AuditEngine:
                 evidence=f"CFO/NI 比率={cfo/ni*100:.1f}% (远低于及格线 100%)",
                 node="quality",
             ))
+
+        # 2. 剪刀差检测 (需要至少 2 期数据)
+        if len(inc) >= 2 and len(bs) >= 2:
+            y_prev = inc.iloc[-2]
+            b_prev = bs.iloc[-2]
+
+            rev_now = _safe_float(y_now.get("revenue")) or 0.0
+            rev_prev = _safe_float(y_prev.get("revenue")) or 0.0
+            rec_now = _safe_float(b_now.get("accounts_receiv")) or 0.0
+            rec_prev = _safe_float(b_prev.get("accounts_receiv")) or 0.0
+            inv_now = _safe_float(b_now.get("inventories")) or 0.0
+            inv_prev = _safe_float(b_prev.get("inventories")) or 0.0
+
+            if rev_prev > 0 and rev_now > 0:
+                rev_g = (rev_now - rev_prev) / rev_prev
+
+                # 应收账款增速远高于营收增速 (放宽信用、激进赊销)
+                if rec_prev > 0:
+                    rec_g = (rec_now - rec_prev) / rec_prev
+                    if (rec_g - rev_g) > 0.20:
+                        flags.append(RedFlagItem(
+                            id=make_flag_id("Buffett", "receivable_scissors_gap"),
+                            framework="Buffett Quality",
+                            level=LEVEL_HIGH,
+                            title="应收账款增速远超营业收入 (放宽信用激进确认)",
+                            value=round((rec_g - rev_g) * 100, 1),
+                            threshold="应收增速 - 营收增速 > 20pp",
+                            evidence=f"应收增速 {rec_g*100:.1f}% vs 营收增速 {rev_g*100:.1f}% (剪刀差 {(rec_g-rev_g)*100:.1f}pp)",
+                            node="quality",
+                        ))
+
+                # 存货增速远超营收增速 (存货积压、滞销跌价风险)
+                if inv_prev > 0:
+                    inv_g = (inv_now - inv_prev) / inv_prev
+                    if (inv_g - rev_g) > 0.30:
+                        flags.append(RedFlagItem(
+                            id=make_flag_id("Buffett", "inventory_scissors_gap"),
+                            framework="Buffett Quality",
+                            level=LEVEL_HIGH,
+                            title="存货增速远超营业收入 (存货严重积压跌价减值雷)",
+                            value=round((inv_g - rev_g) * 100, 1),
+                            threshold="存货增速 - 营收增速 > 30pp",
+                            evidence=f"存货增速 {inv_g*100:.1f}% vs 营收增速 {rev_g*100:.1f}% (剪刀差 {(inv_g-rev_g)*100:.1f}pp)",
+                            node="quality",
+                        ))
+
+        # 3. 非经常性损益/营业外利润占比过高排查
+        op = _safe_float(y_now.get("operate_profit"))
+        total_p = _safe_float(y_now.get("total_profit")) or ni
+        if total_p and abs(total_p) > 1e6 and op is not None:
+            non_op = total_p - op
+            non_op_ratio = abs(non_op) / abs(total_p)
+            if non_op_ratio > 0.30:
+                flags.append(RedFlagItem(
+                    id=make_flag_id("Buffett", "non_operating_profit_high"),
+                    framework="Buffett Quality",
+                    level=LEVEL_HIGH if non_op_ratio > 0.50 else LEVEL_MEDIUM,
+                    title="非主业非经常性损益占比过高",
+                    value=round(non_op_ratio, 2),
+                    threshold="|非经常性损益| / |利润总额| > 30%",
+                    evidence=f"非经收益={non_op/1e8:.2f} 亿，占利润总额比例高达 {non_op_ratio*100:.1f}%",
+                    node="quality",
+                ))
 
         return flags
 

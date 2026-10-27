@@ -24,11 +24,13 @@ class JudgmentChainRunner:
         flags: list[RedFlagItem],
         matched_youzi: list[dict[str, Any]],
         trap_warnings: list[str],
+        matched_personas: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         """按因果判断链合成决断卡。"""
         price = quote.get("close", 0.0)
         ma5 = momentum.get("ma5", price)
         ma20 = momentum.get("ma20", price)
+        personas = matched_personas or []
 
         # ─── 节点 ① 质地（成色与造假概率）───
         fatal_quality = [f for f in flags if f.level == LEVEL_FATAL and f.node == "quality"]
@@ -60,15 +62,24 @@ class JudgmentChainRunner:
         else:
             odds_verdict = f"赔率尚可 (下方强支撑位 {tail_price:.2f} 元，下行潜在空间约 -{downside_pct}%)"
 
-        # ─── 节点 ④ 路径（左尾回撤与席位属性）───
+        # ─── 节点 ④ 路径（左尾回撤与 24 游资战法共振）───
         fatal_path = [f for f in flags if f.level == LEVEL_FATAL and f.node == "path"]
-        youzi_desc = ", ".join(y["youzi_name"] for y in matched_youzi[:2]) if matched_youzi else "无知名游资上榜"
-        if fatal_path:
-            path_verdict = f"🔴 存在致命治理左尾风险: {fatal_path[0].title} (知名席位: {youzi_desc})"
-        elif trap_warnings:
-            path_verdict = f"⚠️ 警惕杀猪盘舆情诱多: {trap_warnings[0]} (知名席位: {youzi_desc})"
+        
+        if personas:
+            top_p = personas[0]
+            p_names = "、".join(f"{p['youzi_name']}({p['style']})" for p in personas[:2])
+            youzi_desc = f"契合【{p_names}】战法 (拟合度 {top_p['fit_score']}分)"
+        elif matched_youzi:
+            youzi_desc = f"席位监控: {', '.join(y['youzi_name'] for y in matched_youzi[:2])}"
         else:
-            path_verdict = f"筹码路径相对健康，重点关注日内承接 (知名席位: {youzi_desc})"
+            youzi_desc = "盘面未达一线游资进场模型，散户合力为主"
+
+        if fatal_path:
+            path_verdict = f"🔴 存在致命治理左尾风险: {fatal_path[0].title} ({youzi_desc})"
+        elif trap_warnings:
+            path_verdict = f"⚠️ 警惕杀猪盘舆情诱多: {trap_warnings[0]} ({youzi_desc})"
+        else:
+            path_verdict = f"筹码与战法路径: {youzi_desc}"
 
         # ─── 节点 ⑤ 决策（档位与退出线）───
         is_fatal = has_fatal_red_flags(flags)
@@ -83,7 +94,10 @@ class JudgmentChainRunner:
         else:
             decision_gear = "买入"
             position_cap = config.MAX_SINGLE_POSITION
-            invalidation_line = f"开盘跌破 MA5 ({ma5:.2f} 元) 或日内跌破分时均线 -3% 无条件止损平仓"
+            if personas:
+                invalidation_line = f"{personas[0]['invalidation']} (防线底: 跌破 MA5 {ma5:.2f} 元平仓)"
+            else:
+                invalidation_line = f"开盘跌破 MA5 ({ma5:.2f} 元) 或日内跌破分时均线 -3% 无条件止损平仓"
 
         card = {
             "ticker": ticker,
@@ -101,6 +115,7 @@ class JudgmentChainRunner:
             "top3_risks": [f.to_dict() for f in get_top3_risks(flags)],
             "all_flags": [f.to_dict() for f in flags],
             "matched_youzi": matched_youzi,
+            "matched_personas": personas,
             "trap_warnings": trap_warnings,
         }
 
