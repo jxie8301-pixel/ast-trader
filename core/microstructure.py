@@ -10,9 +10,16 @@ Based on quantitative financial engineering research (Kaiyuan Quant, Huatai Quan
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 import pandas as pd
+
+from .main_force_engine import (
+    MainForceDecision,
+    MainForceStateEngine,
+    StageCode,
+    AntiSpoofingAudit,
+)
 
 
 @dataclass
@@ -32,15 +39,27 @@ class MicrostructureProfile:
     auction_open_chg_pct: float         # 今日竞价开盘涨幅 (%)
     verdict_text: str                   # 综合微观诊断结论
     # ── 主力行为生命周期阶段 (两大核心拼图补齐) ──
-    main_force_stage: str               # 显式主力阶段标签: 如 "【🚀 主升锁仓加速期】"
+    main_force_stage: str               # 显式主力阶段标签: 如 "【🚀 缩量加速赶顶期 (持仓锁仓/严禁追高)】"
     main_force_behavior: str            # 主力行为深度穿透解读
     main_force_risk: str                # 做多证伪与风险触发条件
     cum_turnover_20d: float             # 20日累计换手率 (%)
     price_position_60d: float           # 60日价格分位 (0.0~1.0)
+    # ── 生产级状态机与反伪装扩展字段 ──
+    main_force_confidence: float = 80.0
+    is_transitional: bool = False
+    suggested_pos_cap: float = 0.15
+    recommended_action: str = ""
+    decision_gear_override: str | None = None
+    stage_code: str = "STAGE_3_QUIET_WASHOUT"
+    anti_spoofing_summary: list[str] = field(default_factory=list)
+    scores: dict[str, float] = field(default_factory=dict)
 
 
 class MicrostructureAnalyzer:
     """微观结构分析器：穿透拆单算法与盘口伪装。"""
+
+    def __init__(self, engine: MainForceStateEngine | None = None) -> None:
+        self.engine = engine or MainForceStateEngine()
 
     def analyze(
         self,
@@ -51,6 +70,8 @@ class MicrostructureAnalyzer:
         momentum: dict[str, Any] | None = None,
         ladder_info: dict[str, Any] | None = None,
         float_share: float = 0.0,
+        quote: dict[str, Any] | None = None,
+        ticker: str = "DEFAULT",
     ) -> MicrostructureProfile:
         """分析 5 分钟 K 线、集合竞价、中周期换手沉淀与主力生命周期。"""
         if not five_min_bars or len(five_min_bars) < 20:
@@ -61,7 +82,7 @@ class MicrostructureAnalyzer:
         for b in five_min_bars:
             op = float(getattr(b, "open", 0.0) or 0.0)
             cl = float(getattr(b, "close", 0.0) or 0.0)
-            vol = float(getattr(b, "volume_lots", 0.0) or 0.0)
+            vol = float(getattr(b, "volume_lots", 0.0) or getattr(b, "volume", 0.0) or 0.0)
             amt = float(getattr(b, "amount", 0.0) or 0.0)
             tm = getattr(b, "time", None)
 
@@ -170,7 +191,7 @@ class MicrostructureAnalyzer:
             raw_chg = getattr(auction_data, "open_change_pct", 0.0) or 0.0
             auction_chg_pct = round(raw_chg, 2)
 
-        # 5. 拼图一：中周期筹码换手与价格带位置测算 (20~60日换手沉降)
+        # 5. 中周期筹码换手与价格带位置测算 (20~60日换手沉降)
         cum_turnover_20d = 0.0
         price_position_60d = 0.5
         if daily_df is not None and not daily_df.empty:
@@ -185,23 +206,38 @@ class MicrostructureAnalyzer:
                 vol_20d = daily_df.head(20)["vol"].sum() * 100.0
                 cum_turnover_20d = round(float(vol_20d / float_share * 100.0), 1)
 
-        # 6. 拼图二：显式主力行为生命周期状态机判定
-        stage_name, behavior_text, risk_text = self._detect_main_force_stage(
-            q_factor=q_factor,
-            smart_vwap=smart_vwap,
-            all_vwap=all_vwap,
+        # 6. 调用主力行为生命周期状态机与反伪装引擎
+        micro_dict = {
+            "smart_q": q_factor,
+            "smart_vwap": smart_vwap,
+            "all_vwap": all_vwap,
+            "smart_buy_ratio": smart_buy_ratio,
+            "smart_sell_ratio": smart_sell_ratio,
+            "smart_phase": smart_phase,
+            "apm_pattern": apm_pattern,
+            "tail_vol_ratio": tail_vol_ratio,
+            "auction_open_amt_wan": auction_amt_wan,
+            "auction_open_chg_pct": auction_chg_pct,
+        }
+        calc_quote = quote or {}
+        if current_price > 0 and "close" not in calc_quote:
+            calc_quote = dict(calc_quote)
+            calc_quote["close"] = current_price
+
+        decision: MainForceDecision = self.engine.evaluate(
+            ticker=ticker,
             current_price=current_price,
-            smart_buy_ratio=smart_buy_ratio,
-            smart_sell_ratio=smart_sell_ratio,
-            smart_phase=smart_phase,
-            apm_pattern=apm_pattern,
-            auction_amt_wan=auction_amt_wan,
-            auction_chg_pct=auction_chg_pct,
-            cum_turnover_20d=cum_turnover_20d,
-            price_position_60d=price_position_60d,
+            quote=calc_quote,
+            daily_df=daily_df,
+            microstructure=micro_dict,
             momentum=momentum or {},
             ladder_info=ladder_info,
+            float_share=float_share,
         )
+
+        stage_name = decision.stage_name
+        behavior_text = decision.behavior_desc
+        risk_text = decision.risk_alert
 
         # 综合诊断描述
         verdict = self._synthesize_verdict(
@@ -239,6 +275,14 @@ class MicrostructureAnalyzer:
             main_force_risk=risk_text,
             cum_turnover_20d=cum_turnover_20d,
             price_position_60d=price_position_60d,
+            main_force_confidence=decision.confidence,
+            is_transitional=decision.is_transitional,
+            suggested_pos_cap=decision.suggested_pos_cap,
+            recommended_action=decision.recommended_action,
+            decision_gear_override=decision.decision_gear_override,
+            stage_code=decision.stage_code.value,
+            anti_spoofing_summary=decision.anti_spoofing.summary_lines(),
+            scores=decision.scores,
         )
 
     def _detect_main_force_stage(
@@ -258,71 +302,30 @@ class MicrostructureAnalyzer:
         momentum: dict[str, Any],
         ladder_info: dict[str, Any] | None,
     ) -> tuple[str, str, str]:
-        """主力生命周期状态机：结合微观Q因子、竞价、中周期换手沉淀与筹码阻力。"""
-        overhead_chips = momentum.get("overhead_chip_pct", 0.0)
-        current_dd = momentum.get("current_drawdown", 0.0)
-        is_bullish = momentum.get("is_bullish_ma", False)
-        board_level = (ladder_info or {}).get("board_level", 0)
-        broken_count = (ladder_info or {}).get("broken_count", 0)
-
-        # 状态 1: 【主升锁仓加速期】(梯队龙头或均线多头极强，主力成本极低已锁仓)
-        if (board_level >= 3 or (is_bullish and price_position_60d > 0.70 and current_price > smart_vwap * 1.15)) and q_factor < 0.96:
-            stage = "【🚀 主升锁仓加速期】"
-            behavior = (
-                f"底部知情资金高度控盘，底层主力建仓成本线约在 {smart_vwap:.2f} 元 (浮盈超 {(current_price/smart_vwap - 1)*100:.0f}%)；"
-                f"日内主力筹码锁定良好、惜售不抛，早盘竞价推升意愿强烈，处于主升博傻与加速冲顶阶段。"
-            )
-            risk = "已临近分歧考验点；盘中一旦炸板放量或早盘竞价低开弱于预期，将瞬时切换为高位放量踩踏出货。"
-            return stage, behavior, risk
-
-        # 状态 2: 【高位派发临界期】(处于高价位，微观卖盘剧烈，或出现早盘诱多下午出货)
-        if price_position_60d > 0.65 and (apm_pattern == "AM_PUMP_PM_DUMP" or smart_phase == "DISTRIBUTION" or smart_sell_ratio > 58.0 or broken_count >= 2):
-            stage = "【⚠️ 高位派发临界期】"
-            behavior = (
-                f"股价处于 60 日相对高位 (分位 {price_position_60d*100:.0f}%)，微观高效率卖盘打压占比达 {smart_sell_ratio:.1f}%；"
-                f"主力倾向于利用早盘脉冲诱多吸引跟风盘，午后通过算法拆单被动挂单撤退派发。"
-            )
-            risk = "量价严重顶背离，买盘多为散户跟风接盘，防范资金兑现引发断头铡刀式破位下杀。"
-            return stage, behavior, risk
-
-        # 状态 3: 【主跌破位/无抵抗阴跌期】(上方套牢重，均线破位，缺乏机构主动托底)
-        if overhead_chips > 55.0 and (not is_bullish or current_dd < -15.0 or current_price < smart_vwap * 0.95):
-            stage = "【📉 主跌破位/无抵抗阴跌期】"
-            behavior = (
-                f"上方套牢盘高达 {overhead_chips:.1f}%，距高点回撤 {current_dd:.1f}%；微观聪明钱买卖比仅 {smart_buy_ratio:.1f}% vs {smart_sell_ratio:.1f}%，"
-                f"场内机构存量资金被动躺平、放弃抵抗，早盘竞价无大额承接意愿，处于流动性匮乏的无抵抗阴跌期。"
-            )
-            risk = "严禁左侧接飞刀！在未见机构放量长阳突破 5 日线前，任何盘中脉冲均是解套盘抛压卖点。"
-            return stage, behavior, risk
-
-        # 状态 4: 【低位隐蔽吸筹期】(低价位，换手充分，微观呈现水下小单高效率买入)
-        if price_position_60d < 0.35 and overhead_chips < 40.0 and (smart_phase == "ACCUMULATION" or (q_factor < 0.985 and smart_buy_ratio > 55.0)):
-            stage = "【🌱 低位隐蔽吸筹期】"
-            behavior = (
-                f"股价处于 60 日底部安全带 (分位 {price_position_60d*100:.0f}%)，微观聪明钱 Q={q_factor:.3f} 且高效率买盘占比 {smart_buy_ratio:.1f}%；"
-                f"知情资金利用水下震荡通过算法小单隐蔽收集筹码，单位价格效率显著偏向主动买盘。"
-            )
-            risk = "吸筹期耗时漫长且常伴随假阴线震仓洗盘，需耐心等待放量突破平台的右侧确认信号。"
-            return stage, behavior, risk
-
-        # 状态 5: 【突破洗盘确认期】(趋势多头，回踩关键均线缩量)
-        if is_bullish and current_dd > -10.0 and apm_pattern in ("PM_ABSORPTION", "NEUTRAL") and overhead_chips < 30.0:
-            stage = "【🔍 突破洗盘确认期】"
-            behavior = (
-                f"股价处于均线多头回踩通道，筹码结构优良 (上方套牢仅 {overhead_chips:.1f}%)；"
-                f"主力拉升脱离成本区后缩量回踩支撑均线，洗出不坚定的浮动获利盘，筹码结构保持健康。"
-            )
-            risk = "若跌破关键支撑均线 (如 MA20) 则洗盘失败转为假突破，需严格执行止损纪律。"
-            return stage, behavior, risk
-
-        # 状态 6: 【存量震荡/等待方向期】(默认中性平衡)
-        stage = "【⏳ 存量震荡/等待方向期】"
-        behavior = (
-            f"聪明钱 Q={q_factor:.3f}，知情成本 {smart_vwap:.2f} 元与现价贴合，多空力量暂时均衡；"
-            f"主力资金既无大幅主动推升也无单边下砸，处于存量筹码中性博弈期。"
+        """向后兼容主力生命周期判定接口。"""
+        micro_dict = {
+            "smart_q": q_factor,
+            "smart_vwap": smart_vwap,
+            "all_vwap": all_vwap,
+            "smart_buy_ratio": smart_buy_ratio,
+            "smart_sell_ratio": smart_sell_ratio,
+            "smart_phase": smart_phase,
+            "apm_pattern": apm_pattern,
+            "tail_vol_ratio": 10.0,
+            "auction_open_amt_wan": auction_amt_wan,
+            "auction_open_chg_pct": auction_chg_pct,
+        }
+        quote = {"close": current_price}
+        decision = self.engine.evaluate(
+            ticker="COMPAT",
+            current_price=current_price,
+            quote=quote,
+            daily_df=None,
+            microstructure=micro_dict,
+            momentum=momentum or {},
+            ladder_info=ladder_info,
         )
-        risk = "密切关注日线区间箱体上下沿得失，防范无量阴跌演化为破位风险。"
-        return stage, behavior, risk
+        return decision.stage_name, decision.behavior_desc, decision.risk_alert
 
     def _synthesize_verdict(
         self,
@@ -389,4 +392,12 @@ class MicrostructureAnalyzer:
             main_force_risk="需观察日线均线与放量突破信号",
             cum_turnover_20d=0.0,
             price_position_60d=0.5,
+            main_force_confidence=50.0,
+            is_transitional=True,
+            suggested_pos_cap=0.0,
+            recommended_action="【观望等待方向明朗】",
+            decision_gear_override=None,
+            stage_code="STAGE_3_QUIET_WASHOUT",
+            anti_spoofing_summary=["微观数据不足，反伪装过滤器已挂起。"],
+            scores={},
         )

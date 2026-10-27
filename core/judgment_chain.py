@@ -155,6 +155,14 @@ class JudgmentChainRunner:
         mf_stage = micro.get("main_force_stage", "【⏳ 存量震荡/等待方向期】")
         mf_behavior = micro.get("main_force_behavior", "")
         mf_risk = micro.get("main_force_risk", "")
+        mf_stage_code = micro.get("stage_code", "")
+        mf_override = micro.get("decision_gear_override")
+        mf_cap = micro.get("suggested_pos_cap", 0.15)
+        mf_rec_act = micro.get("recommended_action", "")
+        mf_conf = micro.get("main_force_confidence", 80.0)
+        is_trans = micro.get("is_transitional", False)
+        anti_spoofing_list = micro.get("anti_spoofing_summary", [])
+
         smart_q = micro.get("smart_q")
         smart_phase = micro.get("smart_phase", "NEUTRAL")
         smart_vwap = micro.get("smart_vwap", price)
@@ -178,9 +186,13 @@ class JudgmentChainRunner:
         else:
             flow_parts.append("距异动偏离线(100%)余量充足")
 
-        p_flow = f"主力阶段: {mf_stage}\n  • 微观指纹: " + "；".join(flow_parts)
+        p_flow = f"主力阶段: {mf_stage} (置信度: {mf_conf:.1f}%{'，多空过渡区' if is_trans else ''})\n  • 微观指纹: " + "；".join(flow_parts)
         if mf_behavior:
             p_flow += f"\n  • 操盘透视: {mf_behavior}"
+        if anti_spoofing_list:
+            meaningful_audits = [a for a in anti_spoofing_list if "未检测到明显反常" not in a and "数据暂缺" not in a]
+            if meaningful_audits:
+                p_flow += "\n  • 反伪装穿透: " + " | ".join(meaningful_audits)
 
         # ─── 支柱 ❺ 本土二元排雷 ───
         if is_fatal:
@@ -190,7 +202,7 @@ class JudgmentChainRunner:
         else:
             p_audit = "✓ 存贷双高、商誉减值、大股东质押与退市财务指标全量排查，未见致命财务红旗 (0红旗)"
 
-        # ─── 最终买方决断与实操纪律 (T+1 纪律死锁) ───
+        # ─── 最终买方决断与实操纪律 (T+1 纪律与主力行为死锁) ───
         if is_fatal:
             decision_gear = "回避"
             decision_title = "【🚫 铁律回避】"
@@ -205,10 +217,39 @@ class JudgmentChainRunner:
             core_contra = "大盘处于短线冰点或强退潮期，空间板受压制且涨停家数锐减，接力亏钱效应扩散，短线胜率极低。"
             action_tactic = "【空仓防守】管住手不伸手接飞刀，耐心等待大盘出现放量共振冰点转折信号后再行开仓。"
             invalidation = "大盘退潮期禁止开新仓，严禁逆势接力！"
+        elif mf_stage_code == "STAGE_5_EXHAUSTION_ACCELERATION":
+            # ─────────────────────────────────────────────────────────
+            # 生产级安全死锁：高标缩量加速赶顶期，持币者严禁追高！买入仓位锁定为 0.0%！
+            # ─────────────────────────────────────────────────────────
+            decision_gear = "观察"
+            decision_title = "【🚀 缩量加速赶顶 (严禁追高)】"
+            position_cap = 0.0
+            b_lvl = (ladder_info or {}).get("board_level", 0)
+            core_contra = (
+                f"标的处于高位加速冲顶阶段 (连板身位: {b_lvl}板)；底仓知情资金建仓均价 {smart_vwap:.2f} 元，"
+                f"主力底层账面浮盈巨大且筹码高度锁定。A股向来'缩量加速即见顶'，此阶段持股者锁仓享受溢价，"
+                f"持币者新开仓盈亏比极度恶化，买方仓位硬性锁死为 0%！"
+            )
+            action_tactic = "【持仓锁仓守利 / 严禁追高开仓】未持股者严禁以任何理由追高接飞刀；持股者紧盯次日早盘分时，一旦开板放量或低开不及预期即刻市价全部获利了结！"
+            invalidation = "早盘竞价大幅低开或日内放量开板瞬间破线，即刻全仓止盈离场，绝不犹豫！"
+        elif mf_stage_code == "STAGE_6_DISTRIBUTION" or mf_override == "回避":
+            decision_gear = "回避"
+            decision_title = "【⚠️ 派发出货防守】"
+            position_cap = 0.0
+            core_contra = "主力行为生命周期处于【⚠️ 对倒派发出货期】：微观呈现高效率卖盘持续出逃，量价严重背离，任何盘中脉冲均是诱多陷阱，买方铁律严禁接盘！"
+            action_tactic = "【坚决清仓回避】已有持仓逢高市价止损止盈离场，未持仓者坚决一股不买！"
+            invalidation = "派发期未结束前，绝不盲目抄底！"
+        elif mf_stage_code == "STAGE_7_PASSIVE_DRIFT":
+            decision_gear = "观察"
+            decision_title = "【📉 无抵抗阴跌 (防守观望)】"
+            position_cap = 0.0
+            core_contra = f"标的主力处于【📉 无抵抗阴跌出清期】：上方套牢盘高达 {overhead_chips:.1f}%，现价跌破知情均线 ({smart_vwap:.2f}元)，机构被动躺平缺乏护盘托底，左侧接飞刀极易被钝刀子割肉。"
+            action_tactic = f"【空仓观望】严禁左侧盲目猜底，下方强支撑位 {support_lvl:.2f} 元；耐心等待放量长阳收复 5 日线并构筑右侧底分型后再行评估。"
+            invalidation = f"严格执行 A 股 T+1 纪律：若次日早盘继续低开跌破昨日最低点，彻底放弃交易机会，严禁盲目左侧接飞刀！"
         elif stock_track == "TRACK_B_INSTITUTIONAL":
             # 机构中军逻辑
             is_bull = momentum.get("is_bullish_ma", False)
-            if not is_bull or overhead_chips > 45.0 or pct_chg < -2.0:
+            if not is_bull or overhead_chips > 45.0 or pct_chg < -2.0 or mf_stage_code not in ("STAGE_4_HEALTHY_MARKUP", "STAGE_3_QUIET_WASHOUT"):
                 decision_gear = "观察"
                 decision_title = "【👀 观望防守】"
                 position_cap = 0.0
@@ -218,31 +259,31 @@ class JudgmentChainRunner:
                     flow_sub = f"现价跌破知情均线 ({smart_vwap:.2f}元) 且缺乏机构护盘托底"
                 else:
                     flow_sub = "微观知情资金处于存量观望、缺乏主动买单推升"
-                core_contra = f"基本面健康且估值具备安全垫 (PE {pe_val:.1f}x)，但短期日线破位、上方套牢盘沉重 ({overhead_chips:.1f}%) 且{flow_sub}，属于典型受阻于解套抛压的缩量阴跌态势。在未见放量长阳收复 5 日线前，绝不盲目抄底！"
+                core_contra = f"基本面健康且估值具备安全垫 (PE {pe_val:.1f}x)，但短期日线受阻于解套抛压 ({overhead_chips:.1f}%) 且{flow_sub}。在未见放量长阳收复 5 日线前，绝不盲目抄底！"
                 action_tactic = f"【弱势等待企稳】下方强支撑位 {support_lvl:.2f} 元；必须等待在支撑位缩量企稳并收复 5 日线后再寻右侧入场点。"
                 invalidation = f"严格执行 A 股 T+1 纪律：若次日早盘继续低开跌破昨日最低点，彻底放弃交易机会，严禁盲目左侧接飞刀！"
             else:
                 decision_gear = "买入"
                 decision_title = "【🔥 趋势做多】"
-                position_cap = 0.15
-                core_contra = f"核心主营纯度高，行业处于景气复苏通道，均线多头趋势健康，大资金温和承接，具备中长期波段配置价值。"
+                position_cap = min(0.20, mf_cap if mf_cap > 0 else 0.15)
+                core_contra = f"核心主营纯度高，行业处于景气复苏通道，均线多头趋势健康，主力处于{mf_stage}，大资金温和承接，具备中长期波段配置价值。"
                 action_tactic = f"【回踩均线低吸】依托 5 日线或分时均线企稳低吸，目标看至上方阻力位 {resistance_lvl:.2f} 元。"
                 invalidation = f"严格执行 A 股 T+1 纪律：建仓日不可卖出；次日若收盘跌破 MA20 趋势破位，坚决离场防守。"
         else:
             # 短线题材逻辑
             is_leader = ladder_info.get("is_leader", False) if ladder_info else False
-            if is_leader or pct_chg >= 4.0:
+            if (is_leader or pct_chg >= 4.0) and mf_stage_code in ("STAGE_4_HEALTHY_MARKUP", "STAGE_1_ACCUMULATION", "STAGE_3_QUIET_WASHOUT"):
                 decision_gear = "买入"
                 decision_title = "【🔥 主升做多】"
-                position_cap = 0.15
-                core_contra = f"题材热点聚焦，标的处于梯队前排核心，具备涨停接力与隔夜溢价预期。"
+                position_cap = min(0.20, mf_cap if mf_cap > 0 else 0.15)
+                core_contra = f"题材热点聚焦，标的处于梯队前排核心，主力处于{mf_stage}且通过反伪装检验，具备涨停接力与隔夜溢价预期。"
                 action_tactic = f"【龙头加速/均线低吸】次日早盘 9:25 竞价若高开 1%~3% 且量比>2 顺势跟进，或开盘回踩分时均线不破企稳低吸。"
                 invalidation = f"严格执行 A 股 T+1 纪律：建仓日无法卖出；次日开盘若大幅低开破位或日内反抽无力，坚决市价止损出局，严禁死扛！"
             else:
                 decision_gear = "观察"
                 decision_title = "【👀 观望确认】"
                 position_cap = 0.0
-                core_contra = "处于题材后排跟风或分歧震荡阶段，板块尚未形成高确定性合力，追高盈亏比不足。"
+                core_contra = f"处于题材分歧震荡阶段 (主力阶段: {mf_stage})，板块尚未形成高确定性合力，追高盈亏比不足。"
                 action_tactic = "【等待转强确认】观察次日早盘能否放量弱转强并向上突破临界点，未确认前坚决列入观察池。"
                 invalidation = f"跌破支撑位 {support_lvl:.2f} 元放弃。"
 
@@ -319,6 +360,12 @@ class JudgmentChainRunner:
             "main_force_stage": mf_stage,
             "main_force_behavior": mf_behavior,
             "main_force_risk": mf_risk,
+            "main_force_confidence": mf_conf,
+            "is_transitional": is_trans,
+            "suggested_pos_cap": mf_cap,
+            "recommended_action": mf_rec_act,
+            "anti_spoofing_summary": anti_spoofing_list,
+            "stage_scores": micro.get("scores", {}),
         }
 
         # 门控机检自动修复

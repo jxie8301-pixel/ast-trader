@@ -92,6 +92,7 @@ def run_analyze(ticker_input: str, html_output: str | None = None) -> None:
         momentum=momentum,
         ladder_info=ladder_info,
         float_share=quote.get("float_share", 0.0),
+        quote=quote,
     )
 
     # 5. 近 30 天龙虎榜席位匹配

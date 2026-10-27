@@ -234,6 +234,7 @@ class EltdxCollector:
         momentum: dict[str, Any] | None = None,
         ladder_info: dict[str, Any] | None = None,
         float_share: float = 0.0,
+        quote: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """获取高频微观结构、知情交易与主力生命周期分析 (开源金工聪明钱 Q、时段切割与换手沉淀)."""
         eltdx_code, ts_code = normalize_code(code_str)
@@ -260,6 +261,8 @@ class EltdxCollector:
                 momentum=momentum,
                 ladder_info=ladder_info,
                 float_share=float_share,
+                quote=quote,
+                ticker=ts_code,
             )
             return {
                 "smart_q": prof.smart_q,
@@ -280,6 +283,14 @@ class EltdxCollector:
                 "main_force_risk": prof.main_force_risk,
                 "cum_turnover_20d": prof.cum_turnover_20d,
                 "price_position_60d": prof.price_position_60d,
+                "main_force_confidence": prof.main_force_confidence,
+                "is_transitional": prof.is_transitional,
+                "suggested_pos_cap": prof.suggested_pos_cap,
+                "recommended_action": prof.recommended_action,
+                "decision_gear_override": prof.decision_gear_override,
+                "stage_code": prof.stage_code,
+                "anti_spoofing_summary": prof.anti_spoofing_summary,
+                "scores": prof.scores,
             }
         except Exception as e:
             logger.warning(f"获取微观结构异常: {e}")
@@ -302,6 +313,14 @@ class EltdxCollector:
                 "main_force_risk": "需观察日线均线与放量信号",
                 "cum_turnover_20d": 0.0,
                 "price_position_60d": 0.5,
+                "main_force_confidence": 50.0,
+                "is_transitional": True,
+                "suggested_pos_cap": 0.0,
+                "recommended_action": "【观望等待方向明朗】",
+                "decision_gear_override": None,
+                "stage_code": "STAGE_3_QUIET_WASHOUT",
+                "anti_spoofing_summary": ["数据暂缺"],
+                "scores": {},
             }
 
     def get_financial_reports(self, code_str: str) -> dict[str, pd.DataFrame]:

@@ -37,10 +37,14 @@ def print_decision_card(card: dict[str, Any]) -> None:
         f"PE(TTM): [bold]{pe:.1f}x[/bold]"
     )
     mf_stage = card.get("main_force_stage", "【⏳ 存量震荡/等待方向期】")
+    mf_conf = float(card.get("main_force_confidence", 80.0) or 80.0)
+    is_trans = bool(card.get("is_transitional", False))
+    trans_tag = " [bold yellow](⚠️多空过渡区)[/bold yellow]" if is_trans else ""
+
     sub_header = (
         f"板块规制: [bold cyan]{board_name}[/bold cyan]  |  "
         f"物种定位: [bold yellow]{track_name}[/bold yellow] (流通: {circ_mv:.1f}亿 / 总值: {total_mv:.1f}亿)\n"
-        f"主力阶段: [bold magenta]{mf_stage}[/bold magenta]  |  "
+        f"主力阶段: [bold magenta]{mf_stage}[/bold magenta] (置信度: [bold cyan]{mf_conf:.1f}%[/bold cyan]{trans_tag})  |  "
         f"决断档位: {gear_style}"
     )
 

@@ -348,8 +348,13 @@ def render_decision_card_html(card: dict[str, Any], output_path: str | None = No
         <section class="section-card">
             <h2>⚡ 主力行为生命周期透视 (Main Force Lifecycle)</h2>
             <div class="verdict-box" style="border-color: #38bdf8;">
-                <div class="verdict-title" style="color: #38bdf8;">当前阶段: {html.escape(card.get('main_force_stage', '【⏳ 存量震荡/等待方向期】'))}</div>
+                <div class="verdict-title" style="color: #38bdf8;">
+                    当前阶段: {html.escape(card.get('main_force_stage', '【⏳ 存量震荡/等待方向期】'))} 
+                    <span style="font-size:12px; color:#94a3b8; font-weight:normal;">(置信度: {card.get('main_force_confidence', 80.0):.1f}%{(' <span style=\"color:#fbbf24;\">⚠️多空过渡区</span>' if card.get('is_transitional') else '')})</span>
+                </div>
+                <div class="verdict-row"><strong>🎯 实操动作:</strong> <span style="color:#38bdf8;">{html.escape(card.get('recommended_action', '观望'))}</span> (建议主力仓位上限: <strong>{card.get('position_cap', 0.0)*100:.0f}%</strong>)</div>
                 <div class="verdict-row"><strong>🔍 操盘透视:</strong> {html.escape(card.get('main_force_behavior', ''))}</div>
+                {"<div class='verdict-row' style='color:#a78bfa;'><strong>🛡️ 反伪装审计:</strong> " + html.escape(' | '.join([x for x in card.get('anti_spoofing_summary', []) if '未检测到明显' not in x])) + "</div>" if [x for x in card.get('anti_spoofing_summary', []) if '未检测到明显' not in x] else ""}
                 <div class="verdict-row" style="color:#f87171;"><strong>⚠️ 证伪/突变条件:</strong> {html.escape(card.get('main_force_risk', ''))}</div>
             </div>
         </section>
