@@ -51,6 +51,33 @@ class GameFeatureExtractor:
             else:
                 break
 
+        # ─── 路径韧性与承压指标 (扛得住吗) ───
+        # 1. 过去 60 日最大回撤与距阶段高点回撤
+        rolling_max = close.cummax()
+        drawdown_series = (close - rolling_max) / rolling_max * 100.0
+        max_dd_60d = round(float(drawdown_series.min()), 2)
+        peak_close = float(close.max())
+        current_dd = round((latest_close - peak_close) / peak_close * 100.0, 2)
+
+        # 2. 上方套牢筹码占比 (成交量高于当前价格的累计成交占比)
+        total_vol = float(vol.sum())
+        if total_vol > 0:
+            overhead_vol = float(vol[close > latest_close].sum())
+            overhead_chip_pct = round(overhead_vol / total_vol * 100.0, 1)
+        else:
+            overhead_chip_pct = 0.0
+
+        # 3. 近 20 日年化波动率
+        if len(asc) >= 20 and "pct_chg" in asc.columns:
+            ret_20d = asc["pct_chg"].iloc[-20:] / 100.0
+            volatility_20d = round(float(ret_20d.std() * np.sqrt(250) * 100.0), 1)
+        else:
+            volatility_20d = 30.0
+
+        # 4. 支撑与阻力位
+        support_level = round(float(close.iloc[-20:].min()), 2) if len(close) >= 20 else round(latest_close * 0.95, 2)
+        resistance_level = round(peak_close, 2)
+
         return {
             "ma5": round(ma5_val, 2),
             "ma10": round(ma10_val, 2),
@@ -59,6 +86,12 @@ class GameFeatureExtractor:
             "volume_ratio": round(vr, 2),
             "consecutive_up_days": consec_up,
             "ma5_bias": bias_ma5,
+            "max_drawdown_60d": max_dd_60d,
+            "current_drawdown": current_dd,
+            "overhead_chip_pct": overhead_chip_pct,
+            "volatility_20d": volatility_20d,
+            "support_level": support_level,
+            "resistance_level": resistance_level,
         }
 
     def evaluate_concept_purity(self, concept_name: str, main_business: list[dict[str, Any]]) -> dict[str, Any]:

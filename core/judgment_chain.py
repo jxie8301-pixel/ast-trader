@@ -69,24 +69,25 @@ class JudgmentChainRunner:
         else:
             odds_verdict = f"赔率尚可 (下方强支撑位 {tail_price:.2f} 元，下行潜在空间约 -{downside_pct}%)"
 
-        # ─── 节点 ④ 路径（左尾回撤与 24 游资战法共振）───
+        # ─── 节点 ④ 路径（抗压能力与筹码回撤耐受度：扛得住吗）───
         fatal_path = [f for f in flags if f.level == LEVEL_FATAL and f.node == "path"]
-        
-        if personas:
-            top_p = personas[0]
-            p_names = "、".join(f"{p['youzi_name']}({p['style']})" for p in personas[:2])
-            youzi_desc = f"契合【{p_names}】战法 (拟合度 {top_p['fit_score']}分)"
-        elif matched_youzi:
-            youzi_desc = f"席位监控: {', '.join(y['youzi_name'] for y in matched_youzi[:2])}"
-        else:
-            youzi_desc = "盘面未达一线游资进场模型，散户合力为主"
+        current_dd = momentum.get("current_drawdown", 0.0)
+        max_dd = momentum.get("max_drawdown_60d", 0.0)
+        overhead_chips = momentum.get("overhead_chip_pct", 0.0)
+        vol_ann = momentum.get("volatility_20d", 30.0)
 
         if fatal_path:
-            path_verdict = f"🔴 存在致命治理左尾风险: {fatal_path[0].title} ({youzi_desc})"
+            path_verdict = f"🔴 存在致命治理左尾爆雷风险: {fatal_path[0].title}，极端回撤不可控，坚决回避"
         elif trap_warnings:
-            path_verdict = f"⚠️ 警惕杀猪盘舆情诱多: {trap_warnings[0]} ({youzi_desc})"
+            path_verdict = f"⚠️ 警惕杀猪盘舆情诱多: {trap_warnings[0]}，流动性面临断崖闪崩风险，难扛极端回撤"
+        elif overhead_chips > 40.0 or current_dd < -15.0:
+            path_verdict = f"❌ 路径颠簸/难扛 (上方套牢筹码沉重 {overhead_chips:.1f}%，距阶段高点回撤 {current_dd:.1f}%，反弹面临解套盘抛压，持仓易遭多杀多)"
+        elif max_dd < -25.0 or vol_ann > 55.0:
+            path_verdict = f"⚠️ 路径高波剧震 (近60日最大回撤 {max_dd:.1f}%，年化波动率 {vol_ann:.1f}%，洗盘剧烈极易被震出局)"
+        elif overhead_chips < 20.0 and current_dd > -8.0:
+            path_verdict = f"✓ 路径相对平滑 (上方套牢筹码仅 {overhead_chips:.1f}%，筹码锁定良好，回撤承压能力强)"
         else:
-            path_verdict = f"筹码与战法路径: {youzi_desc}"
+            path_verdict = f"路径中性震荡 (上方套牢盘 {overhead_chips:.1f}%，距高点回撤 {current_dd:.1f}%，需严守均线防线防破位)"
 
         # ─── 节点 ⑤ 决策（档位与退出线）───
         is_fatal = has_fatal_red_flags(flags)
