@@ -83,6 +83,7 @@ class JudgmentChainRunner:
         microstructure: dict[str, Any] | None = None,
         daily_df: Any | None = None,
         financial_reports: dict[str, Any] | None = None,
+        data_health: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """合成兼具 Ashare 深度投研严谨性与 A 股盘口微观实战性的全维决断卡。"""
         price = quote.get("close", 0.0)
@@ -232,6 +233,21 @@ class JudgmentChainRunner:
         else:
             j_fin = "✓"
             ev_fin = f"资产负债率 {debt_ratio:.1f}%，短期流动性充裕，破产与债务违约风险极低"
+
+        # 检查数据健康度与接口异常缺口
+        failed_names = [f.get("name", "") for f in (data_health or {}).get("failed_details", [])]
+        if any("减持" in n for n in failed_names):
+            if j_mgmt == "✓":
+                j_mgmt = "⚠️"
+            ev_mgmt += " (⚠️ 减持计划接口取数异常，在途减持暂无法核验)"
+        if any("主营" in n for n in failed_names):
+            if j_moat == "✓":
+                j_moat = "⚠️"
+            ev_moat += " (⚠️ 主营构成接口取数异常，业务纯度暂无法穿透)"
+        if any("财务三表" in n or "资产负债" in n or "利润" in n for n in failed_names):
+            if j_fin == "✓":
+                j_fin = "⚠️"
+            ev_fin += " (⚠️ 财务三表部分接口取数异常，财务数据已降级估算)"
 
         # 质地五问子判定表汇总
         sub_verdicts_quality = [
@@ -621,6 +637,7 @@ class JudgmentChainRunner:
             "main_force_behavior": mf_behavior,
             "main_force_confidence": mf_conf,
             "is_transitional": is_trans,
+            "data_health": data_health or {},
         }
 
         # 机检校验与封顶硬锁死

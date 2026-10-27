@@ -158,6 +158,54 @@ def render_decision_card_html(card: dict[str, Any], output_path: str | None = No
         </div>
         """
 
+
+    # 数据接口健康度与信息缺口审计 HTML 渲染
+    dh = card.get("data_health", {})
+    all_health_records = dh.get("all_records", [])
+    has_dh_errors = dh.get("has_errors", False)
+    total_interfaces = dh.get("total_interfaces", 0)
+    failed_interfaces = dh.get("failed_count", 0)
+    succ_interfaces = dh.get("success_count", 0)
+    empty_interfaces = dh.get("empty_count", 0)
+
+    health_rows = ""
+    for r in all_health_records:
+        st = r.get("status", "SUCCESS")
+        if st == "SUCCESS":
+            st_badge = '<span class="badge badge-buy">✓ 成功</span>'
+        elif st == "FAILED":
+            st_badge = '<span class="badge badge-fatal">🔴 异常失败</span>'
+        elif st == "EMPTY":
+            st_badge = '<span class="badge badge-warn">🟡 空数据</span>'
+        else:
+            st_badge = f'<span class="badge badge-info">{html.escape(st)}</span>'
+
+        detail_msg = html.escape(str(r.get("note", "") or ""))
+        if st == "FAILED":
+            err_type = html.escape(str(r.get("error_type", "")))
+            err_msg = html.escape(str(r.get("error_message", "")))
+            detail_msg = f'<span style="color:#f87171; font-weight:700;">[{err_type}] {err_msg}</span>'
+            if r.get("note"):
+                detail_msg += f'<br><span style="color:#fbbf24; font-size:12px;">业务影响: {html.escape(r.get("note"))}</span>'
+
+        health_rows += f"""
+        <tr>
+            <td><strong>{html.escape(str(r.get('name', '')))}</strong></td>
+            <td style="color:#94a3b8; font-size:12px; font-family:monospace;">{html.escape(str(r.get('channel', '')))}</td>
+            <td style="text-align:center;">{st_badge}</td>
+            <td style="text-align:right; font-family:monospace;">{r.get('record_count', 0)}</td>
+            <td style="font-size:13px;">{detail_msg}</td>
+        </tr>
+        """
+
+    if not health_rows:
+        health_rows = '<tr><td colspan="5" style="text-align:center; color:#94a3b8; padding:16px;">未记录接口健康度信息</td></tr>'
+
+    if has_dh_errors or failed_interfaces > 0:
+        health_status_banner = f'<span style="color:#ef4444; font-weight:700;">⚠️ 检测到 {failed_interfaces} 个数据通道发生异常阻断 (共调用 {total_interfaces} 个接口，成功 {succ_interfaces} 项，信息存在缺口降级)</span>'
+    else:
+        health_status_banner = f'<span style="color:#10b981; font-weight:700;">✓ 全通道数据调用健康 (共核验 {total_interfaces} 个接口，成功 {succ_interfaces} 项，空集 {empty_interfaces} 项，零静默拦截)</span>'
+
     html_content = f"""<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
@@ -436,6 +484,28 @@ def render_decision_card_html(card: dict[str, Any], output_path: str | None = No
                 </thead>
                 <tbody>
                     {risk_rows}
+                </tbody>
+            </table>
+        </section>
+
+        <!-- 6. 数据接口状态与信息缺口审计 -->
+        <section class="section-card">
+            <h2>📡 数据接口状态与信息缺口审计 (Data Health & Gap Audit)</h2>
+            <div style="margin-bottom:12px; font-size:13px;">
+                {health_status_banner}
+            </div>
+            <table class="table">
+                <thead>
+                    <tr>
+                        <th style="width: 220px;">数据接口名称</th>
+                        <th style="width: 170px;">数据通道/源</th>
+                        <th style="width: 110px; text-align:center;">调用状态</th>
+                        <th style="width: 90px; text-align:right;">记录数</th>
+                        <th>异常详情 / 取数审计说明</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {health_rows}
                 </tbody>
             </table>
         </section>

@@ -3,9 +3,12 @@ from __future__ import annotations
 
 from collections import defaultdict
 from dataclasses import dataclass, field
+import logging
 from typing import Any
 
 from data.eltdx_client import open_client
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -219,7 +222,7 @@ class LadderAnalyzer:
             if macro_result:
                 phase = macro_result.macro_regime_label
         except Exception as e:
-            pass
+            logger.warning("宏观大盘周期评估异常: %s: %s", type(e).__name__, e, exc_info=True)
 
         overview = MarketSentimentOverview(
             trade_date=lad.trade_date or "",

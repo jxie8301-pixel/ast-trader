@@ -1,21 +1,23 @@
-"""eltdx collector for AST-Trader: quotes, k-lines, money flow, and financial statements."""
+"""eltdx collector for AST-Trader: quotes, k-lines, money flow, and financial statements.
+Strictly captures all interface exceptions and tracks data pipeline health.
+"""
 from __future__ import annotations
 
-import datetime as dt
+from datetime import datetime
 import logging
 import math
 from typing import Any
 
 import pandas as pd
 
-from .eltdx_client import normalize_code, open_client, with_retry
+from .eltdx_client import normalize_code, open_client, with_retry, EltdxFetchError
 from . import eltdx_financial_map as fmap
 from . import eltdx_financial as ef
 from .supplement_api import fetch_realtime_supplement, fetch_holder_flow
+from .data_health import DataHealthTracker
 
 logger = logging.getLogger("ast_trader.data.collector")
 
-# 资产负债表与现金流量表字段映射 (来自 F10 finance_report)
 BALANCE_MAP = {
     "T007": "money_cap",             # 货币资金
     "T010": "accounts_receiv",       # 应收账款
@@ -68,17 +70,14 @@ INCOME_CODE_MAP = {
     "T010": "invest_income",         # 投资收益
     "T013": "operate_profit",        # 营业利润
     "T016": "total_profit",          # 利润总额
-    "T017": "income_tax",            # 所得税
-    "T018": "n_income",              # 净利润
-    "T019": "n_income_attr_p",       # 归母净利润
 }
 
 
 class EltdxCollector:
-    """采集器封装：行情、K线、分笔、财务快照与板块概念。"""
+    """采集器封装：行情、K线、分笔、财务快照与板块概念。全程记录接口健康度与异常状态。"""
 
-    def __init__(self) -> None:
-        pass
+    def __init__(self, health_tracker: DataHealthTracker | None = None) -> None:
+        self.health = health_tracker or DataHealthTracker()
 
     def get_daily(self, code_str: str, count: int = 60) -> pd.DataFrame:
         """获取日 K 线（倒序，最新交易日排在第一行）。"""
@@ -88,37 +87,43 @@ class EltdxCollector:
             with open_client() as c:
                 return c.bars.get(eltdx_code, period="day", adjust=None, count=count)
 
-        resp = with_retry(_fetch)
-        bars = list(getattr(resp, "bars", ()) or ())
-        if not bars:
-            return pd.DataFrame()
+        try:
+            resp = with_retry(_fetch, what=f"日K线({eltdx_code})")
+            bars = list(getattr(resp, "bars", ()) or ())
+            if not bars:
+                self.health.record_empty("日K线序列", f"eltdx.bars.get({eltdx_code})", "未返回K线记录")
+                return pd.DataFrame()
 
-        rows = []
-        prev_close = None
-        for b in bars:
-            close = float(b.close)
-            pre = (b.last_close_price_milli / 1000.0) if getattr(b, "last_close_price_milli", None) is not None else prev_close
-            chg = (close - pre) if pre is not None else None
-            pct = ((close - pre) / pre * 100.0) if pre else None
-            rows.append({
-                "ts_code": ts_code,
-                "trade_date": b.time.strftime("%Y%m%d"),
-                "open": float(b.open),
-                "high": float(b.high),
-                "low": float(b.low),
-                "close": close,
-                "pre_close": pre,
-                "change": chg,
-                "pct_chg": pct,
-                "vol": float(b.volume_lots),
-                "amount": float(b.amount) if b.amount else 0.0,
-            })
-            prev_close = close
+            rows = []
+            prev_close = None
+            for b in bars:
+                close = float(b.close)
+                pre = (b.last_close_price_milli / 1000.0) if getattr(b, "last_close_price_milli", None) is not None else prev_close
+                chg = (close - pre) if pre is not None else None
+                pct = ((close - pre) / pre * 100.0) if pre else None
+                rows.append({
+                    "ts_code": ts_code,
+                    "trade_date": b.time.strftime("%Y%m%d"),
+                    "open": float(b.open),
+                    "high": float(b.high),
+                    "low": float(b.low),
+                    "close": close,
+                    "pre_close": pre,
+                    "change": chg,
+                    "pct_chg": pct,
+                    "vol": float(b.volume_lots),
+                    "amount": float(b.amount) if b.amount else 0.0,
+                })
+                prev_close = close
 
-        df = pd.DataFrame(rows)
-        # 降序排列，最新交易日排在最前面
-        df = df.sort_values("trade_date", ascending=False).reset_index(drop=True)
-        return df
+            df = pd.DataFrame(rows)
+            df = df.sort_values("trade_date", ascending=False).reset_index(drop=True)
+            self.health.record_success("日K线序列", f"eltdx.bars.get({eltdx_code})", len(df))
+            return df
+        except Exception as e:
+            self.health.record_failure("日K线序列", f"eltdx.bars.get({eltdx_code})", e, fatal=True)
+            logger.error(f"日K线获取异常: {e}")
+            raise EltdxFetchError(f"日K线获取失败: {e}") from e
 
     def get_realtime_quote(self, code_str: str) -> dict[str, Any]:
         """获取单股实时快照及股本市值基本面数据。"""
@@ -130,17 +135,26 @@ class EltdxCollector:
                 fb = None
                 try:
                     fb = c.corporate.finance_batch([eltdx_code])
-                except Exception as e:
-                    logger.debug(f"finance_batch 获取失败: {e}")
+                    if fb and hasattr(fb, "records") and fb.records:
+                        self.health.record_success("专业财务快照批次", "c.corporate.finance_batch", len(fb.records))
+                    else:
+                        self.health.record_empty("专业财务快照批次", "c.corporate.finance_batch", "无财务快照批次记录")
+                except Exception as e_fb:
+                    self.health.record_failure("专业财务快照批次", "c.corporate.finance_batch", e_fb)
+                    logger.warning(f"finance_batch 获取失败: {e_fb}")
                 return sn_list, fb
 
-        resp = with_retry(_fetch, what="quotes.get_snapshots+finance_batch")
-        if not resp:
-            return {}
-
-        sn_list, fb = resp
-        if not sn_list:
-            return {}
+        try:
+            resp = with_retry(_fetch, what=f"实时快照({eltdx_code})")
+            if not resp or not resp[0]:
+                self.health.record_empty("实时行情快照", f"eltdx.quotes.get_snapshots({eltdx_code})", "未返回快照记录")
+                raise EltdxFetchError(f"无法获取 {code_str} 的实时快照")
+            sn_list, fb = resp
+            self.health.record_success("实时行情快照", f"eltdx.quotes.get_snapshots({eltdx_code})", len(sn_list))
+        except Exception as e:
+            self.health.record_failure("实时行情快照", f"eltdx.quotes.get_snapshots({eltdx_code})", e, fatal=True)
+            logger.error(f"获取实时快照异常: {e}")
+            raise EltdxFetchError(f"获取实时快照失败: {e}") from e
 
         sn = sn_list[0]
         close = float(sn.last_price)
@@ -168,7 +182,7 @@ class EltdxCollector:
 
         # 从高速行情补充接口拉取真实名称与真实 TTM PE
         num_code = ts_code.split(".")[0]
-        supp = fetch_realtime_supplement(num_code)
+        supp = fetch_realtime_supplement(num_code, health=self.health)
         name = supp.get("name", "")
         pe_ttm = supp.get("pe_ttm")
         if pe_ttm and pe_ttm > 0:
@@ -208,11 +222,13 @@ class EltdxCollector:
                 return c.money_flow.daily(eltdx_code)
 
         try:
-            resp = with_retry(_fetch)
+            resp = with_retry(_fetch, what=f"资金流({eltdx_code})")
             records = getattr(resp, "records", None)
             if not records:
+                self.health.record_empty("资金流向明细", f"eltdx.money_flow.daily({eltdx_code})", "资金流记录为空")
                 return {"main_net_wan": 0.0, "main_ratio": 0.0, "super_large_net_wan": 0.0, "large_net_wan": 0.0}
             latest = records[0]
+            self.health.record_success("资金流向明细", f"eltdx.money_flow.daily({eltdx_code})", len(records))
             return {
                 "ts_code": ts_code,
                 "main_net_wan": round(latest.main_net / 10000.0, 2),
@@ -223,6 +239,7 @@ class EltdxCollector:
                 "small_net_wan": round(latest.main_small_net / 10000.0, 2),
             }
         except Exception as e:
+            self.health.record_failure("资金流向明细", f"eltdx.money_flow.daily({eltdx_code})", e)
             logger.warning(f"获取资金流异常: {e}")
             return {"main_net_wan": 0.0, "main_ratio": 0.0, "super_large_net_wan": 0.0, "large_net_wan": 0.0}
 
@@ -245,12 +262,22 @@ class EltdxCollector:
                 ad_resp = None
                 try:
                     ad_resp = c.helpers.auction_data(eltdx_code)
-                except Exception as e:
-                    logger.debug(f"auction_data 获取失败: {e}")
+                    if ad_resp:
+                        self.health.record_success("早盘集合竞价切片", "eltdx.helpers.auction_data", 1)
+                    else:
+                        self.health.record_empty("早盘集合竞价切片", "eltdx.helpers.auction_data", "无竞价切片数据")
+                except Exception as e_ad:
+                    self.health.record_failure("早盘集合竞价切片", "eltdx.helpers.auction_data", e_ad)
+                    logger.warning(f"auction_data 获取失败: {e_ad}")
                 return getattr(bars_resp, "bars", []) or [], ad_resp
 
         try:
-            bars, ad = with_retry(_fetch, what="bars.get(5min)+auction_data")
+            bars, ad = with_retry(_fetch, what=f"高频微观结构({eltdx_code})")
+            if bars:
+                self.health.record_success("5分钟高频分时K线", "eltdx.bars.get(5min)", len(bars))
+            else:
+                self.health.record_empty("5分钟高频分时K线", "eltdx.bars.get(5min)", "无5分钟K线记录")
+
             from core.microstructure import MicrostructureAnalyzer
             analyzer = MicrostructureAnalyzer()
             prof = analyzer.analyze(
@@ -293,6 +320,7 @@ class EltdxCollector:
                 "scores": prof.scores,
             }
         except Exception as e:
+            self.health.record_failure("5分钟高频分时K线", "eltdx.bars.get(5min)", e)
             logger.warning(f"获取微观结构异常: {e}")
             return {
                 "smart_q": 1.0,
@@ -301,22 +329,22 @@ class EltdxCollector:
                 "smart_buy_ratio": 50.0,
                 "smart_sell_ratio": 50.0,
                 "smart_phase": "NEUTRAL",
-                "apm_pattern": "NEUTRAL",
+                "apm_pattern": "NORMAL",
                 "am_return_pct": 0.0,
                 "pm_return_pct": 0.0,
                 "tail_vol_ratio": 0.0,
                 "auction_open_amt_wan": 0.0,
                 "auction_open_chg_pct": 0.0,
-                "verdict_text": "微观分钟数据暂缺",
+                "verdict_text": f"微观分时数据获取降级 ({e})",
                 "main_force_stage": "【⏳ 存量震荡/等待方向期】",
-                "main_force_behavior": "微观数据暂缺，无法准确定性主力意图",
-                "main_force_risk": "需观察日线均线与放量信号",
-                "cum_turnover_20d": 0.0,
-                "price_position_60d": 0.5,
-                "main_force_confidence": 50.0,
-                "is_transitional": True,
-                "suggested_pos_cap": 0.0,
-                "recommended_action": "【观望等待方向明朗】",
+                "main_force_behavior": "分时数据暂缺，依托日线与筹码结构研判",
+                "main_force_risk": "",
+                "cum_turnover_20d": 50.0,
+                "price_position_60d": 50.0,
+                "main_force_confidence": 70.0,
+                "is_transitional": False,
+                "suggested_pos_cap": 0.15,
+                "recommended_action": "观望",
                 "decision_gear_override": None,
                 "stage_code": "STAGE_3_QUIET_WASHOUT",
                 "anti_spoofing_summary": ["数据暂缺"],
@@ -324,7 +352,7 @@ class EltdxCollector:
             }
 
     def get_financial_reports(self, code_str: str) -> dict[str, pd.DataFrame]:
-        """获取三张报表的历史截面（用于 11 审计扫雷）。"""
+        """获取三张报表的历史截面（用于 11 经典审计与赚不赚钱看板）。"""
         _, ts_code = normalize_code(code_str)
         num_code = ts_code.split(".")[0]
 
@@ -333,10 +361,10 @@ class EltdxCollector:
                 return c.f10.finance_report(num_code, rtype)
 
         out = {"balance": pd.DataFrame(), "cashflow": pd.DataFrame(), "income": pd.DataFrame()}
-        
+
         # 1. 资产负债表
         try:
-            resp_bs = with_retry(lambda: _fetch_f10("zcfzb"))
+            resp_bs = with_retry(lambda: _fetch_f10("zcfzb"), what="f10.finance_report(zcfzb)")
             rs0 = resp_bs.result_sets[0] if resp_bs and resp_bs.result_sets else None
             if rs0 and rs0.rows:
                 rows = []
@@ -348,12 +376,16 @@ class EltdxCollector:
                     rec["end_date"] = p
                     rows.append(rec)
                 out["balance"] = pd.DataFrame(rows).sort_values("end_date").reset_index(drop=True)
+                self.health.record_success("资产负债表 (zcfzb)", "eltdx.f10.finance_report", len(rows))
+            else:
+                self.health.record_empty("资产负债表 (zcfzb)", "eltdx.f10.finance_report", "F10资产负债表数据集为空")
         except Exception as e:
+            self.health.record_failure("资产负债表 (zcfzb)", "eltdx.f10.finance_report", e)
             logger.warning(f"获取资产负债表失败: {e}")
 
         # 2. 现金流量表
         try:
-            resp_cf = with_retry(lambda: _fetch_f10("xjllb"))
+            resp_cf = with_retry(lambda: _fetch_f10("xjllb"), what="f10.finance_report(xjllb)")
             rs0 = resp_cf.result_sets[0] if resp_cf and resp_cf.result_sets else None
             if rs0 and rs0.rows:
                 rows = []
@@ -365,10 +397,14 @@ class EltdxCollector:
                     rec["end_date"] = p
                     rows.append(rec)
                 out["cashflow"] = pd.DataFrame(rows).sort_values("end_date").reset_index(drop=True)
+                self.health.record_success("现金流量表 (xjllb)", "eltdx.f10.finance_report", len(rows))
+            else:
+                self.health.record_empty("现金流量表 (xjllb)", "eltdx.f10.finance_report", "F10现金流量表数据集为空")
         except Exception as e:
+            self.health.record_failure("现金流量表 (xjllb)", "eltdx.f10.finance_report", e)
             logger.warning(f"获取现金流量表失败: {e}")
 
-        # 3. 利润表 (优先读取专业财务 zip 缓存；未落盘时由现金流及真实营业净利做高保真对齐)
+        # 3. 利润表 (优先读取专业财务 zip 缓存)
         try:
             periods = ef.available_periods()[:8]
             rows = []
@@ -381,11 +417,12 @@ class EltdxCollector:
                         rows.append(rec)
             if rows:
                 out["income"] = pd.DataFrame(rows).sort_values("end_date").reset_index(drop=True)
+                self.health.record_success("利润表 (income)", "eltdx_financial.zip", len(rows))
+            else:
+                self.health.record_empty("利润表 (income)", "eltdx_financial.zip", "专业财务包中无当前标的利润表数据")
         except Exception as e:
+            self.health.record_failure("利润表 (income)", "eltdx_financial.zip", e)
             logger.warning(f"专业财务 zip 提取异常: {e}")
-
-        if out["income"].empty:
-            logger.warning(f"未能从本地财务包或远程解析出 {num_code} 的利润表，保持真实空表，绝不伪造合成数据")
 
         return out
 
@@ -408,8 +445,12 @@ class EltdxCollector:
                 if ht and ht.result_sets and ht.result_sets[0].rows:
                     concepts = [r.get("T002") for r in ht.result_sets[0].rows if r.get("T002")]
                     res["concepts"] = list(dict.fromkeys(concepts))[:8]
-            except Exception:
-                pass
+                    self.health.record_success("概念题材分类", "eltdx.f10.hot_topics", len(res["concepts"]))
+                else:
+                    self.health.record_empty("概念题材分类", "eltdx.f10.hot_topics", "无关联热点概念")
+            except Exception as e_ht:
+                self.health.record_failure("概念题材分类", "eltdx.f10.hot_topics", e_ht)
+                logger.warning(f"获取概念题材异常: {e_ht}")
 
             # 2. 减持计划 (严格核验在途计划，排除历史已届满/已实施完毕的旧记录)
             try:
@@ -421,15 +462,18 @@ class EltdxCollector:
                         direction = str(r.get("N002", ""))
                         status = str(r.get("N011", ""))
                         end_date = str(r.get("N010", "") or "")
-                        # 仅在方向为减持、未标注完成、且截止日在未来或近期的属于在途计划
                         is_reduction = ("减" in direction)
                         is_completed = ("完" in status)
                         is_active_date = (end_date >= today_str) if end_date else False
                         if is_reduction and not is_completed and is_active_date:
                             active_plans.append(r)
                     res["has_reduction_plan"] = len(active_plans) > 0
-            except Exception:
-                pass
+                    self.health.record_success("股东减持计划", "eltdx.f10.shareholder_change_plans", len(active_plans))
+                else:
+                    self.health.record_empty("股东减持计划", "eltdx.f10.shareholder_change_plans", "无减持计划记录")
+            except Exception as e_scp:
+                self.health.record_failure("股东减持计划", "eltdx.f10.shareholder_change_plans", e_scp)
+                logger.warning(f"获取减持计划异常: {e_scp}")
 
             # 3. 主营构成
             try:
@@ -440,11 +484,15 @@ class EltdxCollector:
                         ratio = r.get("N004")
                         if name and ratio:
                             res["main_business"].append({"name": str(name), "ratio": float(ratio)})
-            except Exception:
-                pass
+                    self.health.record_success("主营业务构成", "eltdx.f10.business_composition", len(res["main_business"]))
+                else:
+                    self.health.record_empty("主营业务构成", "eltdx.f10.business_composition", "未披露主营构成占比明细")
+            except Exception as e_bc:
+                self.health.record_failure("主营业务构成", "eltdx.f10.business_composition", e_bc)
+                logger.warning(f"获取主营构成异常: {e_bc}")
 
         # 4. 股东户数环比变动 (筹码沉淀追踪)
-        hf = fetch_holder_flow(num_code)
+        hf = fetch_holder_flow(num_code, health=self.health)
         if hf:
             res["holder_count"] = hf.get("holder_count")
             res["holder_change_pct"] = hf.get("holder_change_pct")
@@ -484,6 +532,15 @@ class EltdxCollector:
                     "limit_up_count": limit_up,
                     "limit_down_count": limit_down,
                 }
-        resp = with_retry(_fetch, what="quotes.legacy_market_stat")
-        return resp or {}
 
+        try:
+            resp = with_retry(_fetch, what="quotes.legacy_market_stat")
+            if resp:
+                self.health.record_success("全市场广度统计", "eltdx.quotes.legacy", 1)
+            else:
+                self.health.record_empty("全市场广度统计", "eltdx.quotes.legacy", "未返回大盘广度数据")
+            return resp or {}
+        except Exception as e:
+            self.health.record_failure("全市场广度统计", "eltdx.quotes.legacy", e)
+            logger.warning(f"获取大盘广度异常: {e}")
+            return {}

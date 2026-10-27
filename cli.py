@@ -96,7 +96,7 @@ def run_analyze(ticker_input: str, html_output: str | None = None) -> None:
     )
 
     # 5. 近 30 天龙虎榜席位匹配
-    lhb_records = fetch_lhb_seats(num_code, days=30)
+    lhb_records = fetch_lhb_seats(num_code, days=30, health=collector.health)
     matcher = SeatMatcher()
     matched_youzi = matcher.match_seats(lhb_records)
 
@@ -142,6 +142,7 @@ def run_analyze(ticker_input: str, html_output: str | None = None) -> None:
         microstructure=microstructure,
         daily_df=daily_df,
         financial_reports=f_data,
+        data_health=collector.health.summary(),
     )
 
     # 9. 渲染终端决断卡

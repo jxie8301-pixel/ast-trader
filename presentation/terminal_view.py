@@ -120,6 +120,30 @@ def print_decision_card(card: dict[str, Any]) -> None:
         f"[bold red]🛑 实战防线 (T+1纪律):[/bold red]\n  {card.get('invalidation_line', '')}",
     ])
 
+
+    # 4. 数据链路健康度与信息缺口检测 (严格禁止静默 pass，显性化披露)
+    dh = card.get("data_health") or {}
+    if dh:
+        total_if = dh.get("total_interfaces", 0)
+        succ_if = dh.get("success_count", 0)
+        fail_if = dh.get("failed_count", 0)
+        empty_if = dh.get("empty_count", 0)
+        has_err = dh.get("has_errors", False)
+
+        dh_lines = []
+        if has_err or fail_if > 0:
+            dh_lines.append(f"[bold red]📡 数据接口状态与信息缺口审计: ⚠️ 检测到 {fail_if} 项接口取数异常 (共调用 {total_if} 个通道，成功 {succ_if})[/bold red]")
+            for rec in dh.get("failed_details", []):
+                dh_lines.append(f"  • [bold red]✗ 异常接口:[/bold red] [bold white]{rec.get('name')}[/bold white] (通道: {rec.get('channel')})")
+                dh_lines.append(f"    [red]报错: [{rec.get('error_type')}] {rec.get('error_message')}[/red]")
+                if rec.get("note"):
+                    dh_lines.append(f"    [yellow]影响: {rec.get('note')}[/yellow]")
+        else:
+            dh_lines.append(f"[bold green]📡 数据接口状态与信息缺口审计:[/bold green] [green]✓ 全通道取数健康 (已核验全部 {total_if} 个数据接口，成功 {succ_if} 项，空集 {empty_if} 项，零报错阻断)[/green]")
+
+        body_lines.append("[dim]─" * 78 + "[/dim]")
+        body_lines.append("\n".join(dh_lines))
+
     panel = Panel(
         "\n\n".join([body_lines[0], body_lines[1]]) + "\n" + "\n\n".join(body_lines[2:]),
         title=f"🎯 [bold yellow]AST-Trader A股买方投研决断卡 (深度版)[/bold yellow]",
