@@ -68,7 +68,7 @@ class PlaybookBuilder:
 
             tp_target = f"首目标压力位 {resistance} 元 (分批止盈 50%)，余仓移动止盈跟随至跌破 5 日线"
             sl_line = f"跌破分时均线(VWAP)或下方强支撑 {support} 元"
-            invalid_rule = f"死锁退出线: 买入后分时跌破均线超 15 分钟未收回，或跌幅达 -3.5%，坚决市价止损出局"
+            invalid_rule = f"死锁退出线 (严守 A 股 T+1 纪律): 建仓日不可卖出；次日开盘若低开直接跌破支撑 {support} 元或反抽不过分时均线超 15 分钟，坚决市价止损出局，严禁违背纪律死扛"
 
             return ExecutionPlaybook(
                 action="BUY",
@@ -84,17 +84,25 @@ class PlaybookBuilder:
             )
 
         if action == "WAIT":
+            pct_chg = quote.get("pct_chg", 0.0)
+            if pct_chg < 0:
+                wait_tactic = "【破位/分歧观察】标的处于日线空头或破位调整中，次日早盘必须观察是否缩量企稳并形成反包弱转强，未确认企稳前严禁伸手抄底"
+            elif pct_chg >= 5.0:
+                wait_tactic = "【冲高回踩观察】短线涨幅偏大，防高位追高被套，等待分时均线回踩企稳获得承接后再行介入"
+            else:
+                wait_tactic = "【筹码分歧观察】多空处于存量震荡博弈中，次日早盘观察是否有增量大单打破平衡"
+
             return ExecutionPlaybook(
                 action="WAIT",
                 action_label="👀 观望确认 (等待临界点)",
-                entry_tactic="【筹码分歧观察】今日存在炸板或放量分歧，次日早盘必须观察是否缩量弱转强，未确认前禁止伸手",
+                entry_tactic=wait_tactic,
                 entry_price_range=f"观望区间: {support} ~ {close} 元",
                 base_position_pct=0,
                 add_position_pct=10,
                 max_position_pct=15,
                 take_profit_target="待弱转强确认后再设止盈目标",
                 stop_loss_line=f"下破 {support} 元彻底破坏形态",
-                invalidation_rule=f"若次日早盘直接低开低走跌破昨日最低点，放弃该标的交易机会",
+                invalidation_rule=f"死锁退出线: 若次日早盘直接低开低走跌破昨日最低点，坚决放弃该标的交易机会",
             )
 
         # REDUCE

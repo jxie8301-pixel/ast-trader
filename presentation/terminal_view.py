@@ -29,6 +29,7 @@ def print_decision_card(card: dict[str, Any]) -> None:
     )
 
     body_lines = [
+        f"[bold cyan]⓪ 闸门 (大盘情绪总况):[/bold cyan] {card.get('market_gate_verdict', '未接入大盘连板情绪')}",
         f"[bold cyan]① 质地 (是不是好公司):[/bold cyan] {card.get('quality_verdict')}",
         f"[bold cyan]② 状态 (在变好吗):[/bold cyan]     {card.get('state_verdict')}",
         f"[bold cyan]③ 赔率 (贵不贵):[/bold cyan]       {card.get('odds_verdict')}",

@@ -45,6 +45,9 @@ class CapitalMatrixRadar:
         matched_personas: list[str],
         concepts: list[str],
         ladder_info: dict[str, Any] | None = None,
+        money_flow: dict[str, Any] | None = None,
+        lhb_records: list[dict[str, Any]] | None = None,
+        governance_info: dict[str, Any] | None = None,
     ) -> CapitalMatrixResult:
         close = quote.get("close", 0.0)
         pe = quote.get("pe", 0.0)
@@ -54,6 +57,8 @@ class CapitalMatrixRadar:
         vol_ratio = momentum.get("volume_ratio", 1.0)
         is_bullish = momentum.get("is_bullish_ma", False)
         bias = momentum.get("ma5_bias", 0.0)
+        overhead_chips = momentum.get("overhead_chip_pct", 0.0)
+        curr_dd = momentum.get("current_drawdown", 0.0)
 
         fatal_flags = [f for f in flags if f.level == "🔴"]
         high_flags = [f for f in flags if f.level == "🟠"]
@@ -63,23 +68,30 @@ class CapitalMatrixRadar:
 
         dimensions: list[CapitalDimension] = []
 
-        # ─── 维度 1: 机构力量 (Institutional Focus) ───
+        # ─── 维度 1: 机构力量 (基本盘、估值与机构席位) ───
+        inst_buy = sum(r.get("buy_amt", 0.0) for r in (lhb_records or []) if "机构专用" in r.get("seat_name", ""))
+        inst_sell = sum(r.get("sell_amt", 0.0) for r in (lhb_records or []) if "机构专用" in r.get("seat_name", ""))
+        inst_net_wan = (inst_buy - inst_sell) / 10000.0
+
         if fatal_flags:
             inst_status = "VETO"
             inst_score = 0.0
-            inst_summary = f"触及买方合规红线: {fatal_flags[0].title}，机构仓位强制清空"
-        elif pe > 0 and pe <= 30 and pb > 0 and pb <= 4.0 and not high_flags:
+            inst_summary = f"触及买方合规红线: {fatal_flags[0].title}，机构仓位强制清空回避"
+        elif pe > 0 and pe <= 35 and pb > 0 and pb <= 4.5 and not high_flags:
             inst_status = "BULL"
-            inst_score = 85.0
-            inst_summary = f"财务底子稳健 (PE {pe:.1f}x / PB {pb:.1f}x)，估值具备安全边际，获中长期配置型机构底仓支持"
+            inst_score = 80.0
+            inst_summary = f"基本面健康 (PE(TTM) {pe:.1f}x / PB {pb:.1f}x)，估值具备安全边际"
+            if inst_net_wan > 1000:
+                inst_summary += f"，近30日龙虎榜获机构净买入 +{inst_net_wan/100:.1f} 亿元"
+                inst_score = min(inst_score + 10.0, 95.0)
         elif pe > 60 or pb > 8.0:
             inst_status = "BEAR"
             inst_score = 35.0
-            inst_summary = f"估值透支严重 (PE {pe:.1f}x / PB {pb:.1f}x)，纯题材溢价，机构资金逢高减持兑现"
+            inst_summary = f"估值偏高 (PE(TTM) {pe:.1f}x / PB {pb:.1f}x)，纯概念溢价，防估值均值回归杀跌"
         else:
             inst_status = "NEUTRAL"
             inst_score = 55.0
-            inst_summary = f"估值与财务处于合理平衡区间 (PE {pe:.1f}x)，机构以被动跟随和网格对冲为主"
+            inst_summary = f"估值与财务处于平衡区间 (PE(TTM) {pe:.1f}x / PB {pb:.1f}x)"
 
         dimensions.append(CapitalDimension(
             dimension_id="institutional",
@@ -87,60 +99,72 @@ class CapitalMatrixRadar:
             status=inst_status,
             score=inst_score,
             summary=inst_summary,
-            key_metrics={"pe": pe, "pb": pb, "fatal_count": len(fatal_flags)},
+            key_metrics={"pe": pe, "pb": pb, "inst_net_wan": inst_net_wan},
         ))
 
-        # ─── 维度 2: 游资合力 (Hot-Money Synergy) ───
-        if matched_personas and not fatal_flags:
-            top_p = matched_personas[:2]
-            p_str = "、".join(top_p)
-            if is_leader or board_level >= 2:
-                hm_status = "BULL"
-                hm_score = 92.0
-                hm_summary = f"梯队核心领涨龙头 ({board_level}板)，高度契合【{p_str}】操盘战法，一线游资大单主升接力"
-            else:
-                hm_status = "BULL"
-                hm_score = 80.0
-                hm_summary = f"题材热点聚焦，契合【{p_str}】战法模型，具备短线游资首板试错与套利意愿"
-        elif fatal_flags:
+        # ─── 维度 2: 游资与主力资金 (真实资金流与连板地位) ───
+        mf = money_flow or {}
+        main_net_wan = mf.get("main_net_wan", 0.0)
+        super_net_wan = mf.get("super_large_net_wan", 0.0)
+
+        if fatal_flags:
             hm_status = "VETO"
             hm_score = 10.0
-            hm_summary = "存在停牌暴雷与立案重伤隐患，游资资金极度厌恶黑天鹅，坚决撤离避免封死跌停"
+            hm_summary = "存在重大合规停牌或立案风险，游资极度规避黑天鹅踩踏"
+        elif main_net_wan < -3000:
+            hm_status = "BEAR"
+            hm_score = 30.0
+            hm_summary = f"主力资金显著净流出 (主力净额 {main_net_wan/100:.1f} 亿元，超大单 {super_net_wan/100:.1f} 亿元)，大单逢高派发，短线缺乏承接"
+        elif is_leader or board_level >= 2:
+            hm_status = "BULL"
+            hm_score = 92.0
+            hm_summary = f"处于连板梯队前排 ({board_level}板)，龙头效应显著，一线游资大单接力溢价"
+        elif main_net_wan > 3000:
+            hm_status = "BULL"
+            hm_score = 85.0
+            hm_summary = f"主力资金强势做多 (主力净额 +{main_net_wan/100:.1f} 亿元)，盘口大单攻击意愿明确"
+        elif matched_personas and bool(concepts):
+            top_p = matched_personas[:2]
+            p_str = "、".join(top_p)
+            hm_status = "BULL"
+            hm_score = 75.0
+            hm_summary = f"题材热点聚焦，契合【{p_str}】战法模型，具备短线试错意愿"
         else:
             hm_status = "NEUTRAL"
             hm_score = 45.0
-            hm_summary = "当前尚未形成一线顶级游资共振合力，盘面以散兵游勇轮动为主"
+            hm_summary = f"主力资金表现平淡 (主力净额 {main_net_wan/100:+.1f} 亿元)，未见强势游资合力主导"
 
         dimensions.append(CapitalDimension(
             dimension_id="hot_money",
-            dimension_name="游资合力 (题材与连板战法)",
+            dimension_name="游资与主力 (资金流与梯队)",
             status=hm_status,
             score=hm_score,
             summary=hm_summary,
             key_metrics={
-                "matched_personas": matched_personas,
+                "main_net_wan": main_net_wan,
+                "super_net_wan": super_net_wan,
                 "is_leader": is_leader,
                 "board_level": board_level,
             },
         ))
 
-        # ─── 维度 3: 量化动量 (Quant Momentum) ───
-        if is_bullish and vol_ratio >= 1.5 and turnover >= 5.0:
+        # ─── 维度 3: 量化动量 (量价与流动性) ───
+        if is_bullish and vol_ratio >= 1.5 and turnover >= 4.0:
             quant_status = "BULL"
-            quant_score = 88.0
-            quant_summary = f"均线多头金叉，量比 {vol_ratio:.1f} 异常放大，换手 {turnover:.1f}%，触发量化多头高频扫单"
+            quant_score = 85.0
+            quant_summary = f"均线多头排列，量比 {vol_ratio:.1f} 放量，换手 {turnover:.1f}%，量价呈现积极量化趋势特征"
         elif is_bullish:
             quant_status = "NEUTRAL"
             quant_score = 65.0
-            quant_summary = f"趋势向好但量能温和 (量比 {vol_ratio:.1f})，量化资金小幅顺势跟随，未达激进进攻阈值"
+            quant_summary = f"均线多头排列但量能平稳 (量比 {vol_ratio:.1f})，动能顺势跟随"
         elif not is_bullish and vol_ratio >= 2.0:
             quant_status = "BEAR"
             quant_score = 25.0
-            quant_summary = f"破位放量杀跌 (量比 {vol_ratio:.1f})，量化 CTA 与融券策略触发止损甚至融券做空"
+            quant_summary = f"破位放量杀跌 (量比 {vol_ratio:.1f})，量价动能彻底破位"
         else:
             quant_status = "BEAR"
             quant_score = 40.0
-            quant_summary = f"均线空头排列，流动性收缩 (换手 {turnover:.1f}%)，量化信号处于观望或空头区间"
+            quant_summary = f"均线空头排列，流动性趋缓 (换手 {turnover:.1f}%，量比 {vol_ratio:.1f})，量价动能承压"
 
         dimensions.append(CapitalDimension(
             dimension_id="quant",
@@ -156,23 +180,35 @@ class CapitalMatrixRadar:
             },
         ))
 
-        # ─── 维度 4: 散户与筹码沉淀 (Retail & Trap Risk) ───
+        # ─── 维度 4: 散户与筹码沉淀 (结构与雷达排查) ───
+        holder_change = (governance_info or {}).get("holder_change_pct")
+
         if len(trap_warnings) >= 2 or any("高比例质押" in f.title for f in fatal_flags):
             retail_status = "VETO"
             retail_score = 15.0
-            retail_summary = f"检测到高危杀猪盘/庄股诱多信号: {trap_warnings[0] if trap_warnings else '高位抛压'}，筹码面临断崖式踩踏"
-        elif trap_warnings:
+            retail_summary = f"高危杀猪盘诱多风险: {trap_warnings[0] if trap_warnings else '高位抛压'}，散户筹码面临踩踏风险"
+        elif overhead_chips > 50.0:
             retail_status = "BEAR"
-            retail_score = 40.0
-            retail_summary = f"警惕微观筹码异象: {trap_warnings[0]}，散户跟风盘偏重，洗盘分歧加剧"
+            retail_score = 35.0
+            retail_summary = f"上方套牢筹码密集 ({overhead_chips:.1f}%)，阶段回撤 {curr_dd:.1f}%，解套抛压沉重"
+        elif overhead_chips < 20.0 and turnover < 15.0:
+            retail_status = "BULL"
+            retail_score = 80.0
+            retail_summary = f"上方套牢筹码仅 {overhead_chips:.1f}%，筹码锁定优良，无沉重解套抛压"
         elif turnover > 25.0:
             retail_status = "NEUTRAL"
             retail_score = 50.0
-            retail_summary = f"单日换手率高达 {turnover:.1f}%，高位筹码剧烈松动，新老资金对倒换手，获利盘有兑现需求"
+            retail_summary = f"换手率达 {turnover:.1f}%，高位筹码松动激化，获利盘集中兑现"
         else:
-            retail_status = "BULL"
-            retail_score = 80.0
-            retail_summary = "未见异常黑嘴诱多与杀猪盘信号，筹码结构相对稳定，获利浮筹锁定良好"
+            retail_status = "NEUTRAL"
+            retail_score = 60.0
+            retail_summary = f"筹码结构中性整理 (上方套牢盘 {overhead_chips:.1f}%，换手 {turnover:.1f}%)"
+
+        if holder_change is not None:
+            if holder_change < -3.0:
+                retail_summary += f" (最新股东户数下降 {abs(holder_change):.1f}%，筹码加速集中)"
+            elif holder_change > 8.0:
+                retail_summary += f" (最新股东户数增加 +{holder_change:.1f}%，筹码趋于发散)"
 
         dimensions.append(CapitalDimension(
             dimension_id="retail_chip",
@@ -180,7 +216,7 @@ class CapitalMatrixRadar:
             status=retail_status,
             score=retail_score,
             summary=retail_summary,
-            key_metrics={"trap_warnings": trap_warnings, "turnover": turnover},
+            key_metrics={"trap_warnings": trap_warnings, "overhead_chips": overhead_chips, "holder_change": holder_change},
         ))
 
         # ─── 加权综合评分与主导力量研判 ───

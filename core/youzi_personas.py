@@ -169,40 +169,48 @@ def extract_tape_features(
     near_high = bool(high and price >= high * 0.985)
     reversal = bool(open_p and pre_close and open_p < pre_close and change_pct > 1.0)
 
-    leader_rank = theme.get("leader_rank", 1)
-    breadth_pct = theme.get("breadth_pct", 65.0)
+    # 严格杜绝无题材/概念为空时的默认值造假
+    has_theme = bool(concepts) or bool(theme.get("has_theme"))
+    leader_rank = theme.get("leader_rank", 1 if has_theme else 999)
+    breadth_pct = theme.get("breadth_pct", 65.0 if has_theme else 0.0)
+    fresh_theme = bool(theme.get("fresh_theme", has_theme))
 
     cap_val = market_cap if market_cap > 0 else (price * 1e8)
+
+    # 区分主板 (10%) 与双创板 (20%) 弹性空间
+    ts_code = str(quote.get("ts_code", ""))
+    is_gem_or_star = ts_code.startswith(("300", "301", "688"))
+    limit_pct = 20.0 if is_gem_or_star else 10.0
 
     return {
         "illiquid": amount < 2e8,
         "capacity": amount >= 10e8,
         "active": turnover >= 3.0 or vol_ratio >= 1.2,
         "trend_up": is_bull,
-        "strong": change_pct >= 4.0,
-        "extended": change_pct >= 9.5,
-        "not_extended": change_pct < 7.0,
+        "strong": change_pct >= (limit_pct * 0.4),
+        "extended": change_pct >= (limit_pct * 0.95),
+        "not_extended": change_pct < (limit_pct * 0.7),
         "near_high": near_high,
         "reversal": reversal,
-        "leader": leader_rank <= 2,
-        "laggard": leader_rank > 5,
-        "theme_hot": breadth_pct >= 55.0,
-        "breadth": breadth_pct >= 65.0,
-        "isolated": breadth_pct < 40.0,
-        "fresh_theme": True,
-        "stale_theme": False,
+        "leader": leader_rank <= 2 if has_theme else False,
+        "laggard": leader_rank > 5 if has_theme else True,
+        "theme_hot": breadth_pct >= 55.0 if has_theme else False,
+        "breadth": breadth_pct >= 65.0 if has_theme else False,
+        "isolated": breadth_pct < 40.0 if has_theme else True,
+        "fresh_theme": fresh_theme,
+        "stale_theme": not fresh_theme,
         "small_cap": 0 < cap_val <= 100e8,
         "mid_cap": 20e8 <= cap_val <= 800e8,
         "large_cap": cap_val > 800e8,
         "low_price": price <= 20.0,
         "low_position": not is_bull,
-        "crowded": turnover >= 12.0 or change_pct >= 9.0,
-        "climax": change_pct >= 9.5,
-        "hard_event": hard_event,
-        "priced_in": change_pct >= 8.0 and hard_event,
+        "crowded": turnover >= 12.0 or change_pct >= (limit_pct * 0.9),
+        "climax": change_pct >= (limit_pct * 0.95),
+        "hard_event": hard_event and has_theme,
+        "priced_in": change_pct >= (limit_pct * 0.8) and hard_event,
         "ai_chain": ai_chain,
         "fake_ai": ai_chain and not hard_event,
-        "fundamental_proxy": hard_event,
+        "fundamental_proxy": hard_event and has_theme,
         "governance_risk": governance_risk,
         "competition": breadth_pct > 80.0 and leader_rank > 2,
         "failed_acceleration": change_pct < 2.0 and not near_high,

@@ -332,7 +332,11 @@ def render_decision_card_html(card: dict[str, Any], output_path: str | None = No
 
         <!-- 1. 五节点因果决断卡 -->
         <section class="section-card">
-            <h2>🎯 AST-Trader 五节点闭环作战决断</h2>
+            <h2>🎯 AST-Trader 因果作战决断 (含市场情绪闸门)</h2>
+            <div class="decision-chain-node" style="border-left-color: #38bdf8;">
+                <span class="node-tag">⓪ 闸门 (大盘情绪总况):</span>
+                <span class="node-content">{html.escape(card.get('market_gate_verdict', '未接入大盘连板情绪'))}</span>
+            </div>
             <div class="decision-chain-node">
                 <span class="node-tag">① 质地 (成色与造假):</span>
                 <span class="node-content">{html.escape(card.get('quality_verdict', ''))}</span>

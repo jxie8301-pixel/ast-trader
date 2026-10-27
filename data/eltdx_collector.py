@@ -11,6 +11,7 @@ import pandas as pd
 from .eltdx_client import normalize_code, open_client, with_retry
 from . import eltdx_financial_map as fmap
 from . import eltdx_financial as ef
+from .supplement_api import fetch_realtime_supplement, fetch_holder_flow
 
 logger = logging.getLogger("ast_trader.data.collector")
 
@@ -165,9 +166,20 @@ class EltdxCollector:
         pe = round(close / eps, 2) if eps > 0 else 0.0
         pb = round(close / bps, 2) if bps > 0 else 0.0
 
+        # 从高速行情补充接口拉取真实名称与真实 TTM PE
+        num_code = ts_code.split(".")[0]
+        supp = fetch_realtime_supplement(num_code)
+        name = supp.get("name", "")
+        pe_ttm = supp.get("pe_ttm")
+        if pe_ttm and pe_ttm > 0:
+            pe = round(pe_ttm, 2)
+        if supp.get("pb") and supp["pb"] > 0:
+            pb = round(supp["pb"], 2)
+
         return {
             "ts_code": ts_code,
             "eltdx_code": eltdx_code,
+            "name": name,
             "close": close,
             "pre_close": pre,
             "open": float(sn.open_price),
@@ -333,5 +345,12 @@ class EltdxCollector:
                             res["main_business"].append({"name": str(name), "ratio": float(ratio)})
             except Exception:
                 pass
+
+        # 4. 股东户数环比变动 (筹码沉淀追踪)
+        hf = fetch_holder_flow(num_code)
+        if hf:
+            res["holder_count"] = hf.get("holder_count")
+            res["holder_change_pct"] = hf.get("holder_change_pct")
+            res["holder_date"] = hf.get("end_date")
 
         return res

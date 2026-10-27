@@ -36,6 +36,7 @@ from data.eltdx_collector import EltdxCollector
 from data.supplement_api import fetch_lhb_seats
 from presentation.html_renderer import render_decision_card_html
 from presentation.terminal_view import print_decision_card, print_screener_table, print_tracker_summary
+from screener.ladder_analyzer import LadderAnalyzer
 from screener.pipeline import ScreenerPipeline
 from screener.tracker import evaluate_tracker_performance
 
@@ -61,7 +62,10 @@ def run_analyze(ticker_input: str, html_output: str | None = None) -> None:
     extractor = GameFeatureExtractor()
     momentum = extractor.extract_momentum(daily_df)
 
-    # 2. 治理与财务扫雷
+    num_code = ts_code.split(".")[0]
+    stock_name = quote.get("name") or f"标的_{num_code}"
+
+    # 2. 治理与财务扫雷 (二元排雷)
     gov_info = collector.get_f10_governance_and_concept(ts_code)
     f_data = collector.get_financial_reports(ts_code)
 
@@ -74,32 +78,45 @@ def run_analyze(ticker_input: str, html_output: str | None = None) -> None:
         quote_info=quote,
     )
 
-    # 3. 龙虎榜席位匹配
-    num_code = ts_code.split(".")[0]
-    lhb_records = fetch_lhb_seats(num_code)
+    # 3. 大盘连板天梯与市场情绪周期 (Layer 0 市场情绪总闸门)
+    ladder_analyzer = LadderAnalyzer()
+    sentiment_overview, stock_theme_map, _ = ladder_analyzer.analyze()
+    ladder_info = stock_theme_map.get(num_code)
+
+    # 4. 真实资金流 (主力大单/超大单流向)
+    money_flow = collector.get_money_flow(ts_code)
+
+    # 5. 近 30 天龙虎榜席位匹配
+    lhb_records = fetch_lhb_seats(num_code, days=30)
     matcher = SeatMatcher()
     matched_youzi = matcher.match_seats(lhb_records)
 
-    # 4. 杀猪盘雷达检测
+    # 6. 杀猪盘雷达检测
     detector = TrapDetector()
     trap_score, trap_warnings = detector.evaluate(ts_code, gov_info.get("concepts", []))
 
-    # 5. 24 顶级游资战法特征提取与严苛匹配 (全面对齐 UZI F_PERSONAS)
+    # 7. 游资战法特征提取与真实匹配 (杜绝无题材默认造假)
+    theme_ctx = {
+        "concepts": gov_info.get("concepts", []),
+        "leader_rank": ladder_info.get("leader_rank", 1) if ladder_info else (1 if gov_info.get("concepts") else 999),
+        "breadth_pct": 75.0 if ladder_info and ladder_info.get("is_leader") else (50.0 if gov_info.get("concepts") else 0.0),
+        "has_theme": bool(gov_info.get("concepts")) or bool(ladder_info),
+    }
     tape_features = extract_tape_features(
         quote=quote,
         momentum=momentum,
         market_cap=quote.get("total_mv", 0.0),
-        theme_info={"concepts": gov_info.get("concepts", [])},
+        theme_info=theme_ctx,
         governance_risk=any(f.level == "🔴" for f in flags),
         hard_event=len(gov_info.get("concepts", [])) > 0,
     )
     matched_personas = evaluate_youzi_personas(tape_features)
 
-    # 6. 五节点判断链装配 (集成六大流派陪审团与实操执行剧本)
+    # 8. 全层因果作战决策链装配
     runner = JudgmentChainRunner()
     card = runner.run(
         ticker=ts_code,
-        name=f"标的_{num_code}",
+        name=stock_name,
         trade_date=datetime.now().strftime("%Y%m%d"),
         quote=quote,
         momentum=momentum,
@@ -108,12 +125,17 @@ def run_analyze(ticker_input: str, html_output: str | None = None) -> None:
         trap_warnings=trap_warnings,
         matched_personas=matched_personas,
         concepts=gov_info.get("concepts", []),
+        ladder_info=ladder_info,
+        sentiment_overview=sentiment_overview,
+        money_flow=money_flow,
+        lhb_records=lhb_records,
+        governance_info=gov_info,
     )
 
-    # 7. 渲染终端决断卡
+    # 9. 渲染终端决断卡
     print_decision_card(card)
 
-    # 8. 若指定 --html，则生成离线研报
+    # 10. 若指定 --html，则生成离线研报
     if html_output is not None:
         saved_path = render_decision_card_html(card, output_path=html_output if html_output != "default" else None)
         print(f"\n📊 离线 HTML 研报已成功生成: {saved_path}")

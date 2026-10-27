@@ -31,13 +31,36 @@ class JudgmentChainRunner:
         matched_personas: list[dict[str, Any]] | None = None,
         concepts: list[str] | None = None,
         ladder_info: dict[str, Any] | None = None,
+        sentiment_overview: Any | None = None,
+        money_flow: dict[str, Any] | None = None,
+        lhb_records: list[dict[str, Any]] | None = None,
+        governance_info: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        """按因果判断链合成决断卡。"""
+        """按因果判断链合成决断卡 (Layer 0 市场情绪闸门 + Layer 1~5 真实量化决策)。"""
         price = quote.get("close", 0.0)
         ma5 = momentum.get("ma5", price)
         ma20 = momentum.get("ma20", price)
         personas = matched_personas or []
         concept_list = concepts or []
+
+        # ─── 节点 ⓪ 市场大盘情绪闸门 (Market Sentiment Gate) ───
+        is_market_ice = False
+        market_gate_verdict = "未接入大盘连板情绪"
+        if sentiment_overview is not None:
+            phase = getattr(sentiment_overview, "sentiment_phase", "未知")
+            space = getattr(sentiment_overview, "space_board_level", 0)
+            tickers = "、".join(getattr(sentiment_overview, "space_board_tickers", [])[:2]) or "无"
+            zt_count = getattr(sentiment_overview, "total_limit_up_count", 0)
+            if phase in ("混沌冰点期", "退潮期", "高位分歧期"):
+                is_market_ice = True
+                market_gate_verdict = f"⚠️ 情绪闸门收紧 (市场处于【{phase}】，空间板 {space}板 [{tickers}]，涨停仅 {zt_count}家，亏钱效应显著，短线强制防守)"
+            else:
+                market_gate_verdict = f"✓ 情绪闸门放行 (市场处于【{phase}】，空间板 {space}板 [{tickers}]，涨停 {zt_count}家，短线情绪具备赚钱效应)"
+
+        # 板块涨跌幅与制度属性
+        is_gem_star = ticker.startswith(("300", "301", "688"))
+        is_bse = ticker.startswith(("8", "4", "920"))
+        board_name = "双创板 (20%涨跌停)" if is_gem_star else ("北交所 (30%涨跌停)" if is_bse else "主板 (10%涨跌停)")
 
         # ─── 节点 ① 质地（成色与造假概率）───
         fatal_quality = [f for f in flags if f.level == LEVEL_FATAL and f.node == "quality"]
@@ -55,11 +78,11 @@ class JudgmentChainRunner:
         bias = momentum.get("ma5_bias", 0.0)
 
         if is_bull and vr >= 1.5:
-            state_verdict = f"放量主升中 (量比 {vr:.1f}，均线多头排列，乖离率 {bias:+.1f}%)"
+            state_verdict = f"放量主升中 [{board_name}] (量比 {vr:.1f}，均线多头排列，乖离率 {bias:+.1f}%)"
         elif is_bull:
-            state_verdict = f"多头趋势但缩量整理 (均线多头，量比 {vr:.1f})"
+            state_verdict = f"多头趋势但缩量整理 [{board_name}] (均线多头，量比 {vr:.1f})"
         else:
-            state_verdict = f"均线空头排列/破位形态 (MA5={ma5:.2f} < MA20={ma20:.2f})"
+            state_verdict = f"均线空头排列/破位形态 [{board_name}] (MA5={ma5:.2f} < MA20={ma20:.2f})"
 
         # ─── 节点 ③ 赔率（空间与估值溢价）───
         tail_price = round(ma20 * 0.95, 2)  # 下方强均线防线作为第一安全底
@@ -67,7 +90,7 @@ class JudgmentChainRunner:
         if downside_pct > 20.0:
             odds_verdict = f"赔率偏低/情绪透支严重 (距离下方均线支撑 {tail_price:.2f} 元有 -{downside_pct}% 空间)"
         else:
-            odds_verdict = f"赔率尚可 (下方强支撑位 {tail_price:.2f} 元，下行潜在空间约 -{downside_pct}%)"
+            odds_verdict = f"赔率尚可 (下方参考支撑位 {tail_price:.2f} 元，下行空间约 -{downside_pct}%)"
 
         # ─── 节点 ④ 路径（抗压能力与筹码回撤耐受度：扛得住吗）───
         fatal_path = [f for f in flags if f.level == LEVEL_FATAL and f.node == "path"]
@@ -94,18 +117,21 @@ class JudgmentChainRunner:
         if is_fatal:
             decision_gear = "回避"
             position_cap = 0.0
-            invalidation_line = "由于命中致命红旗，禁止建仓！"
+            invalidation_line = "由于命中致命红旗，触发买方一票否决，禁止建仓！"
+        elif is_market_ice:
+            # 市场处于冰点/退潮期，情绪总闸门强制防守
+            decision_gear = "观察"
+            position_cap = 0.0
+            invalidation_line = "大盘处于短线冰点/退潮期，情绪闸门强制空仓防守，严禁逆势操作"
         elif not is_bull or downside_pct > 25.0 or trap_warnings:
             decision_gear = "观察"
             position_cap = 0.0
             invalidation_line = f"跌破 5 日线 {ma5:.2f} 元未收回即放弃"
         else:
             decision_gear = "买入"
-            position_cap = config.MAX_SINGLE_POSITION
-            if personas:
-                invalidation_line = f"{personas[0]['invalidation']} (防线底: 跌破 MA5 {ma5:.2f} 元平仓)"
-            else:
-                invalidation_line = f"开盘跌破 MA5 ({ma5:.2f} 元) 或日内跌破分时均线 -3% 无条件止损平仓"
+            # 动态仓位控制：若年化波动率高，适当调低单票仓位
+            position_cap = 0.15 if vol_ann > 45.0 else config.MAX_SINGLE_POSITION
+            invalidation_line = f"严格执行 A 股 T+1 纪律: 开盘跌破 MA5 ({ma5:.2f} 元) 或次日反抽无力即止损平仓"
 
         # ─── 四维资金博弈雷达解构 (机构/游资/量化/散户) ───
         persona_names = [p.get("youzi_name", "") for p in personas if isinstance(p, dict)]
@@ -117,6 +143,9 @@ class JudgmentChainRunner:
             matched_personas=persona_names,
             concepts=concept_list,
             ladder_info=ladder_info,
+            money_flow=money_flow,
+            lhb_records=lhb_records,
+            governance_info=governance_info,
         )
 
         # ─── 实操执行剧本战术卡 ───
@@ -136,6 +165,8 @@ class JudgmentChainRunner:
             "trade_date": trade_date,
             "price": price,
             "pct_chg": quote.get("pct_chg", 0.0),
+            "market_gate_verdict": market_gate_verdict,
+            "board_name": board_name,
             "quality_verdict": quality_verdict,
             "state_verdict": state_verdict,
             "odds_verdict": odds_verdict,

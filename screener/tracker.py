@@ -114,8 +114,9 @@ def evaluate_tracker_performance(collector: EltdxCollector | None = None) -> dic
             if df.empty or len(df) < 2:
                 continue
 
-            # df 已经按 trade_date 升序排列
+            # 确保日 K 线严格按 trade_date 升序排列，以便 idx+1 正确指向未来下一个交易日
             df["trade_date"] = df["trade_date"].astype(str)
+            df = df.sort_values("trade_date", ascending=True).reset_index(drop=True)
             # 找到选出当天的索引
             match_idx = df[df["trade_date"] == pick_date].index
             if len(match_idx) == 0:
