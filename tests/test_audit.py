@@ -1,11 +1,12 @@
-"""Unit tests for AST-Trader audit engine and red flag detection (aligned with Ashare)."""
+"""Unit tests for AST-Trader audit engine and red flag detection (strictly aligned with Ashare & UZI)."""
 from __future__ import annotations
 
 import pandas as pd
 import pytest
 
 from core.audit_engine import AuditEngine
-from core.red_flags import LEVEL_FATAL, LEVEL_HIGH
+from core.red_flags import LEVEL_FATAL, LEVEL_HIGH, LEVEL_LOW, get_top3_risks
+from core.trap_detector import TrapDetector, detect_trap_signals
 
 
 def test_beneish_m_score_fraud_detection():
@@ -34,6 +35,32 @@ def test_beneish_m_score_fraud_detection():
     assert any(f.level in (LEVEL_FATAL, LEVEL_HIGH) for f in m_flags)
 
 
+def test_piotroski_f_score():
+    """测试 Piotroski F-Score 9 签号健康度评分。"""
+    engine = AuditEngine()
+    # 恶化数据: 净利润亏损、现金流为负、资产负债率上升、流动比率下降
+    bs_data = [
+        {"total_assets": 100.0, "total_cur_assets": 50.0, "total_cur_liab": 20.0, "total_liab": 30.0},
+        {"total_assets": 100.0, "total_cur_assets": 30.0, "total_cur_liab": 40.0, "total_liab": 60.0},
+    ]
+    inc_data = [
+        {"revenue": 100.0, "oper_cost": 50.0, "n_income": 10.0},
+        {"revenue": 80.0, "oper_cost": 60.0, "n_income": -10.0},
+    ]
+    cf_data = [
+        {"n_cashflow_act": 15.0},
+        {"n_cashflow_act": -20.0},
+    ]
+    flags = engine.run_audit(
+        balance_df=pd.DataFrame(bs_data),
+        cashflow_df=pd.DataFrame(cf_data),
+        income_df=pd.DataFrame(inc_data),
+    )
+    f_flags = [f for f in flags if f.framework == "Piotroski F-Score"]
+    assert len(f_flags) >= 1
+    assert f_flags[0].level == LEVEL_HIGH
+
+
 def test_dupont_roe_collapse():
     """测试 DuPont ROE 暴跌 > 10pp 触发 🔴 致命红旗。"""
     engine = AuditEngine()
@@ -50,7 +77,7 @@ def test_dupont_roe_collapse():
         cashflow_df=pd.DataFrame(),
         income_df=pd.DataFrame(inc_data),
     )
-    dp_flags = [f for f in flags if f.framework == "DuPont Analysis"]
+    dp_flags = [f for f in flags if f.framework == "DuPont"]
     assert len(dp_flags) == 1
     assert dp_flags[0].level == LEVEL_FATAL
 
@@ -60,11 +87,11 @@ def test_buffett_scissors_gap():
     engine = AuditEngine()
     bs_data = [
         {"total_assets": 100.0, "total_equity": 50.0, "accounts_receiv": 20.0, "inventories": 10.0},
-        {"total_assets": 120.0, "total_equity": 50.0, "accounts_receiv": 35.0, "inventories": 10.0},  # 应收增 75%
+        {"total_assets": 120.0, "total_equity": 50.0, "accounts_receiv": 35.0, "inventories": 10.0},
     ]
     inc_data = [
         {"revenue": 100.0, "n_income": 10.0, "operate_profit": 10.0, "total_profit": 10.0},
-        {"revenue": 110.0, "n_income": 12.0, "operate_profit": 12.0, "total_profit": 12.0},  # 营收仅增 10% (剪刀差 65pp)
+        {"revenue": 110.0, "n_income": 12.0, "operate_profit": 12.0, "total_profit": 12.0},
     ]
     cf_data = [
         {"n_cashflow_act": 10.0},
@@ -121,7 +148,7 @@ def test_goodwill_impairment_risk():
         cashflow_df=pd.DataFrame(),
         income_df=pd.DataFrame(),
     )
-    gw_flags = [f for f in flags if f.framework == "Asset Impairment"]
+    gw_flags = [f for f in flags if f.framework == "Buffett Quality" and "商誉" in f.title]
     assert len(gw_flags) == 1
     assert gw_flags[0].level == LEVEL_FATAL
 
@@ -136,6 +163,41 @@ def test_shareholder_dispersion_risk():
         income_df=pd.DataFrame(),
         governance_info=gov_info,
     )
-    chip_flags = [f for f in flags if f.framework == "Shareholder Dispersion"]
+    chip_flags = [f for f in flags if f.framework == "Shareholder Flow"]
     assert len(chip_flags) == 1
     assert chip_flags[0].level == LEVEL_HIGH
+
+
+def test_trap_detector_eight_signals():
+    """测试杀猪盘 8 信号检测引擎。"""
+    detector = TrapDetector()
+    score, warnings = detector.evaluate(
+        ticker="000001",
+        concepts=["重大利好", "即将爆发", "老师带单", "VIP直播间"],
+    )
+    assert score <= 5
+    assert len(warnings) >= 2
+
+
+def test_top3_grouping_and_ranking():
+    """测试基于 metric_refs 的风险分组与 Top3 杀伤力排序 (完全对齐 Ashare)。"""
+    engine = AuditEngine()
+    bs_data = [
+        {"total_assets": 100.0, "total_equity": 50.0, "accounts_receiv": 20.0, "goodwill": 60.0},
+        {"total_assets": 100.0, "total_equity": 50.0, "accounts_receiv": 40.0, "goodwill": 60.0},
+    ]
+    inc_data = [
+        {"revenue": 100.0, "n_income": 20.0},
+        {"revenue": 105.0, "n_income": 5.0},
+    ]
+    gov_info = {"pledge_ratio": 0.80}
+    flags = engine.run_audit(
+        balance_df=pd.DataFrame(bs_data),
+        cashflow_df=pd.DataFrame(),
+        income_df=pd.DataFrame(inc_data),
+        governance_info=gov_info,
+    )
+    top3 = get_top3_risks(flags)
+    assert len(top3) <= 3
+    # 致命红旗必须排在最前 (质押或商誉或ROE崩塌)
+    assert top3[0].level == LEVEL_FATAL

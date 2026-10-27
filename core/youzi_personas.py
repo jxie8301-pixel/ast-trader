@@ -1,4 +1,6 @@
-"""Authentic 24 Youzi Personas & tape feature evaluator ported from UZI-Skill."""
+"""Authentic 24 Youzi Personas & tape feature evaluator ported from UZI-Skill.
+Includes full SEATS database, 500-billion market cap boundary and LHB seat matching.
+"""
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -22,9 +24,9 @@ class PersonaSpec:
 # UZI-Skill 真实定义之 24 大一线游资操盘画像与严苛条件
 F_PERSONAS: tuple[PersonaSpec, ...] = (
     PersonaSpec("zhang_mz", "章盟主", "容量趋势", ("capacity", "trend_up"), ("leader", "theme_hot"), ("illiquid", "isolated"), "主线核心维持放量承接", "跌破上午均价且板块转弱"),
-    PersonaSpec("sun_ge", "孙哥", "板块引导", ("theme_hot", "leader"), ("breadth", "active"), ("isolated",), "板块宽度继续扩散", "个股强而板块不响应"),
+    PersonaSpec("sun_ge", "孙哥", "板块引导", ("theme_hot", "leader"), ("breadth", "active"), ("isolated",), "板块宽度继续扩散", "个股强而板块不响应 (跌破 -3% 坚决离场)"),
     PersonaSpec("zhao_lg", "赵老哥", "一二板定龙头", ("strong", "leader"), ("fresh_theme", "active"), ("extended", "laggard"), "前排换手确认且题材保持新鲜", "后排化或题材快速退潮"),
-    PersonaSpec("fs_wyj", "佛山无影脚", "超跌反核", ("small_cap", "reversal"), ("active",), ("large_cap", "illiquid"), "反核后承接不破启动位", "冲高无承接或退出流动性下降"),
+    PersonaSpec("fs_wyj", "佛山无影脚", "超跌反核", ("small_cap", "reversal"), ("active",), ("large_cap", "illiquid"), "反核后承接不破启动位", "冲高无承接或跌破启动位坚决平仓"),
     PersonaSpec("yangjia", "炒股养家", "情绪周期", ("theme_hot",), ("breadth", "strong"), ("risk_off", "climax"), "赚钱效应继续向同题材扩散", "高位一致转分歧且亏钱效应扩散"),
     PersonaSpec("chen_xq", "陈小群", "龙头全周期", ("leader", "strong"), ("reversal", "hard_event"), ("laggard", "priced_in"), "总龙分歧转一致并带动板块", "后排跟风或消息兑现后失去承接"),
     PersonaSpec("hu_jl", "呼家楼", "板块平铺协同", ("breadth", "theme_hot"), ("capacity", "active"), ("isolated",), "多标的同步放量", "协同消失并退化为单票脉冲"),
@@ -47,10 +49,98 @@ F_PERSONAS: tuple[PersonaSpec, ...] = (
     PersonaSpec("ghzw", "股海贼王", "主线接力与格局票", ("theme_hot", "leader"), ("active", "capacity", "hard_event"), ("laggard", "failed_acceleration"), "涨停原因、板块地位与大盘环境同时成立", "非主线、承接差或高位竞争失败"),
 )
 
+# 游资通用大市值上界 (元) (对齐 UZI seat_db.py:235)
+FALLBACK_YOUZI_MAX_MCAP_YUAN = 50_000_000_000  # 500 亿元
+_MEGA_CAP_ALLOWLIST = frozenset({"章盟主"})     # 可做大盘的游资
+
+# 游资真实营业部席位速查表 (镜像自 UZI seat_db.py)
+SEATS: dict[str, dict[str, Any]] = {
+    "章盟主": {
+        "tier": "legend",
+        "style": "大资金趋势波段，格局锁仓",
+        "seats": ["江苏路", "宁波彩虹北路", "延安路"],
+    },
+    "孙哥": {
+        "tier": "legend",
+        "style": "板块引导，波段锁仓",
+        "seats": ["溧阳路", "上海古北路", "上海分公司"],
+    },
+    "赵老哥": {
+        "tier": "legend",
+        "style": "打板，二板定龙头",
+        "seats": ["解放北路", "绍兴证券营业部", "阜成路"],
+    },
+    "佛山无影脚": {
+        "tier": "legend",
+        "style": "一日游，翘板，砸盘王",
+        "seats": ["绿景路", "季华六路", "祖庙路"],
+    },
+    "炒股养家": {
+        "tier": "legend",
+        "style": "情绪揣摩，通道排板",
+        "seats": ["红宝石路", "宛平南路"],
+    },
+    "陈小群": {
+        "tier": "new_gen",
+        "style": "龙头接力、一线天、反核按钮",
+        "seats": ["大连黄河路"],
+    },
+    "呼家楼": {
+        "tier": "new_gen",
+        "style": "多席位协同、板块平铺扫货",
+        "seats": ["上海凯滨路", "中信北京总部", "朝外大街"],
+    },
+    "方新侠": {
+        "tier": "new_gen",
+        "style": "大成交趋势票、格局锁仓",
+        "seats": ["陕西分公司", "朱雀大街"],
+    },
+    "作手新一": {
+        "tier": "new_gen",
+        "style": "龙头战法，连板+趋势兼做",
+        "seats": ["南京太平南路"],
+    },
+    "小鳄鱼": {
+        "tier": "new_gen",
+        "style": "主流热点题材，趋势+接力",
+        "seats": ["佛山顺德", "上海浦东南路"],
+    },
+    "六一中路": {
+        "tier": "new_2025",
+        "style": "大格局引导，锁仓带动全行业",
+        "seats": ["六一中路"],
+    },
+    "宁波桑田路": {
+        "tier": "regional",
+        "style": "纯连板接力，市场高标接力",
+        "seats": ["桑田路"],
+    },
+    "拉萨天团": {
+        "tier": "regional",
+        "style": "散户大本营，高频做T",
+        "seats": ["东环路", "团结路"],
+    },
+}
+
 _AI_TERMS = (
     "AI", "人工智能", "算力", "光模块", "CPO", "半导体", "芯片", "PCB", "铜箔", "机器人",
     "液冷", "电源", "数据中心", "固态电池", "低空经济", "华为", "消费电子",
 )
+
+
+def match_seats_in_lhb(lhb_records: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
+    """根据龙虎榜明细匹配游资席位 (对齐 UZI seat_db.py:217)。"""
+    matches: dict[str, list[dict[str, Any]]] = {}
+    for nick, info in SEATS.items():
+        keywords = info["seats"]
+        hits = []
+        for row in lhb_records:
+            text = " ".join(str(v) for v in row.values())
+            if any(kw in text for kw in keywords):
+                hits.append(row)
+        if hits:
+            matches[nick] = hits
+    return matches
 
 
 def extract_tape_features(
@@ -119,14 +209,20 @@ def extract_tape_features(
         "breakdown": change_pct < -2.0,
         "risk_off": False,
         "sample_low": False,
+        "_market_cap": cap_val,
     }
 
 
-def evaluate_youzi_personas(features: dict[str, bool | None]) -> list[dict[str, Any]]:
-    """针对标的特征严格比对 24 大顶级游资战法规则 (一票否决 + 必备项校验)。"""
+def evaluate_youzi_personas(features: dict[str, Any]) -> list[dict[str, Any]]:
+    """针对标的特征严格比对 24 大顶级游资战法规则 (一票否决 + 必备项校验 + 500亿市值上限)。"""
     matched: list[dict[str, Any]] = []
+    cap_val = float(features.get("_market_cap") or 0.0)
 
     for spec in F_PERSONAS:
+        # 0. 500 亿大市值上限 (对齐 UZI seat_db.py:255)
+        if cap_val > FALLBACK_YOUZI_MAX_MCAP_YUAN and spec.name not in _MEGA_CAP_ALLOWLIST:
+            continue
+
         # 1. 一票否决检查
         vetoed = False
         for veto_k in spec.veto_rules:
