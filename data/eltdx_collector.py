@@ -226,6 +226,58 @@ class EltdxCollector:
             logger.warning(f"获取资金流异常: {e}")
             return {"main_net_wan": 0.0, "main_ratio": 0.0, "super_large_net_wan": 0.0, "large_net_wan": 0.0}
 
+    def get_microstructure(self, code_str: str, current_price: float = 0.0) -> dict[str, Any]:
+        """获取高频微观结构与知情交易分析 (聪明钱 Q 因子、APM 时段切割与集合竞价)."""
+        eltdx_code, ts_code = normalize_code(code_str)
+
+        def _fetch():
+            with open_client() as c:
+                bars_resp = c.bars.get(eltdx_code, period="5min", count=480)
+                ad_resp = None
+                try:
+                    ad_resp = c.helpers.auction_data(eltdx_code)
+                except Exception as e:
+                    logger.debug(f"auction_data 获取失败: {e}")
+                return getattr(bars_resp, "bars", []) or [], ad_resp
+
+        try:
+            bars, ad = with_retry(_fetch, what="bars.get(5min)+auction_data")
+            from core.microstructure import MicrostructureAnalyzer
+            analyzer = MicrostructureAnalyzer()
+            prof = analyzer.analyze(bars, auction_data=ad, current_price=current_price)
+            return {
+                "smart_q": prof.smart_q,
+                "smart_vwap": prof.smart_vwap,
+                "all_vwap": prof.all_vwap,
+                "smart_buy_ratio": prof.smart_buy_ratio,
+                "smart_sell_ratio": prof.smart_sell_ratio,
+                "smart_phase": prof.smart_phase,
+                "apm_pattern": prof.apm_pattern,
+                "am_return_pct": prof.am_return_pct,
+                "pm_return_pct": prof.pm_return_pct,
+                "tail_vol_ratio": prof.tail_vol_ratio,
+                "auction_open_amt_wan": prof.auction_open_amt_wan,
+                "auction_open_chg_pct": prof.auction_open_chg_pct,
+                "verdict_text": prof.verdict_text,
+            }
+        except Exception as e:
+            logger.warning(f"获取微观结构异常: {e}")
+            return {
+                "smart_q": 1.0,
+                "smart_vwap": current_price,
+                "all_vwap": current_price,
+                "smart_buy_ratio": 50.0,
+                "smart_sell_ratio": 50.0,
+                "smart_phase": "NEUTRAL",
+                "apm_pattern": "NEUTRAL",
+                "am_return_pct": 0.0,
+                "pm_return_pct": 0.0,
+                "tail_vol_ratio": 0.0,
+                "auction_open_amt_wan": 0.0,
+                "auction_open_chg_pct": 0.0,
+                "verdict_text": "微观分钟数据暂缺",
+            }
+
     def get_financial_reports(self, code_str: str) -> dict[str, pd.DataFrame]:
         """获取三张报表的历史截面（用于 11 审计扫雷）。"""
         _, ts_code = normalize_code(code_str)

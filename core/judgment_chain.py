@@ -62,6 +62,7 @@ class JudgmentChainRunner:
         money_flow: dict[str, Any] | None = None,
         lhb_records: list[dict[str, Any]] | None = None,
         governance_info: dict[str, Any] | None = None,
+        microstructure: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """按 A 股双轨逻辑合成作战决断卡。"""
         price = quote.get("close", 0.0)
@@ -144,22 +145,52 @@ class JudgmentChainRunner:
             else:
                 p_tape = f"日线均线: MA5偏离 {momentum.get('ma5_bias', 0.0):+.1f}%，换手率 {turnover:.1f}%"
 
-        # ─── 支柱 ❹ 资金动向 / 监管余量 ───
+        # ─── 支柱 ❹ 资金动向 / 微观结构与监管余量 ───
         mf = money_flow or {}
         main_net = mf.get("main_net_wan", 0.0)
         super_net = mf.get("super_large_net_wan", 0.0)
         pe_val = quote.get("pe", 0.0)
         pb_val = quote.get("pb", 0.0)
 
-        if stock_track == "TRACK_B_INSTITUTIONAL":
-            if main_net < -2000:
-                p_flow = f"⚠️ 主力资金净流出 {main_net/100:.1f} 亿元 (超大单 {super_net/100:.1f} 亿元)，资金逢高派发，缺乏增量抄底盘；估值 PE(TTM) {pe_val:.1f}x / PB {pb_val:.1f}x"
-            elif main_net > 2000:
-                p_flow = f"✓ 主力大单净流入 +{main_net/100:.1f} 亿元，大资金主动回流承接；估值 PE(TTM) {pe_val:.1f}x / PB {pb_val:.1f}x"
+        micro = microstructure or {}
+        smart_q = micro.get("smart_q")
+        smart_phase = micro.get("smart_phase", "NEUTRAL")
+        smart_vwap = micro.get("smart_vwap", price)
+        smart_buy = micro.get("smart_buy_ratio", 50.0)
+        smart_sell = micro.get("smart_sell_ratio", 50.0)
+        auc_chg = micro.get("auction_open_chg_pct", 0.0)
+        auc_amt = micro.get("auction_open_amt_wan", 0.0)
+
+        flow_parts = []
+        if smart_q is not None and smart_q > 0:
+            # 基于开源金工聪明钱 Q 因子与微观时段诊断
+            if smart_phase == "ACCUMULATION":
+                flow_parts.append(f"✓ 聪明钱呈【低吸潜伏】(Q={smart_q:.3f}，高效率推升买盘 {smart_buy:.1f}%)")
+            elif smart_phase == "DISTRIBUTION":
+                flow_parts.append(f"❌ 聪明钱呈【冲高派发】(Q={smart_q:.3f}，高位打压卖盘 {smart_sell:.1f}%)")
+            elif smart_phase == "PASSIVE_FALL":
+                flow_parts.append(f"❌ 聪明钱【放弃抵抗/破位下砸】(高效率砸盘占比 {smart_sell:.1f}%，现价低于知情成本线 {smart_vwap:.2f}元)")
             else:
-                p_flow = f"主力资金表现平淡 (净额 {main_net/100:+.1f} 亿元)，估值处于合理偏低区间 (PE(TTM) {pe_val:.1f}x / PB {pb_val:.1f}x)"
+                flow_parts.append(f"聪明钱 Q={smart_q:.3f} (知情成本 {smart_vwap:.2f}元 vs 现价 {price:.2f}元，多空博弈均衡)")
+
+            if auc_amt > 1000:
+                flow_parts.append(f"开盘竞价成交 {auc_amt:.0f}万元 ({auc_chg:+.2f}%)")
+            elif auc_amt > 0:
+                flow_parts.append(f"开盘竞价偏淡 ({auc_chg:+.2f}%, {auc_amt:.0f}万)")
         else:
-            p_flow = f"主力大单净额 {main_net/100:+.1f} 亿元 | 距严重异动偏离线(100%)尚有充足安全余量"
+            if main_net < -2000:
+                flow_parts.append(f"⚠️ 主力大单净流出 {main_net/100:.1f} 亿元")
+            elif main_net > 2000:
+                flow_parts.append(f"✓ 主力大单净流入 +{main_net/100:.1f} 亿元")
+            else:
+                flow_parts.append(f"主力大单净额 {main_net/100:+.1f} 亿元")
+
+        if stock_track == "TRACK_B_INSTITUTIONAL":
+            flow_parts.append(f"估值 PE(TTM) {pe_val:.1f}x / PB {pb_val:.1f}x")
+        else:
+            flow_parts.append("距严重异动偏离线(100%)尚有充足安全余量")
+
+        p_flow = "；".join(flow_parts)
 
         # ─── 支柱 ❺ 本土二元排雷 ───
         if is_fatal:
@@ -191,7 +222,13 @@ class JudgmentChainRunner:
                 decision_gear = "观察"
                 decision_title = "【👀 观望防守】"
                 position_cap = 0.0
-                core_contra = f"基本面健康且估值具备安全垫 (PE {pe_val:.1f}x)，但短期日线破位且上方套牢盘沉重 ({overhead_chips:.1f}%)，主力资金持续派发，属于典型缩量阴跌态势。在未见放量长阳收复 5 日线前，绝不盲目抄底！"
+                if smart_phase == "DISTRIBUTION":
+                    flow_sub = f"微观呈现高位知情资金集中派发 (卖盘 {smart_sell:.1f}%)"
+                elif smart_phase == "PASSIVE_FALL":
+                    flow_sub = f"现价跌破知情均线 ({smart_vwap:.2f}元) 且缺乏机构护盘托底"
+                else:
+                    flow_sub = "微观知情资金处于存量观望、缺乏主动买单推升"
+                core_contra = f"基本面健康且估值具备安全垫 (PE {pe_val:.1f}x)，但短期日线破位、上方套牢盘沉重 ({overhead_chips:.1f}%) 且{flow_sub}，属于典型受阻于解套抛压的缩量阴跌态势。在未见放量长阳收复 5 日线前，绝不盲目抄底！"
                 action_tactic = f"【弱势等待企稳】下方强支撑位 {support_lvl:.2f} 元；必须等待在支撑位缩量企稳并收复 5 日线后再寻右侧入场点。"
                 invalidation = f"严格执行 A 股 T+1 纪律：若次日早盘继续低开跌破昨日最低点，彻底放弃交易机会，严禁盲目左侧接飞刀！"
             else:
@@ -288,6 +325,7 @@ class JudgmentChainRunner:
             "matched_personas": matched_personas or [],
             "trap_warnings": trap_warnings,
             "ladder_info": ladder_info,
+            "microstructure": micro,
         }
 
         # 门控机检自动修复

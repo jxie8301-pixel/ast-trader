@@ -83,8 +83,9 @@ def run_analyze(ticker_input: str, html_output: str | None = None) -> None:
     sentiment_overview, stock_theme_map, _ = ladder_analyzer.analyze()
     ladder_info = stock_theme_map.get(num_code)
 
-    # 4. 真实资金流 (主力大单/超大单流向)
+    # 4. 真实资金流与高频微观结构 (开源金工聪明钱 Q 因子与集合竞价)
     money_flow = collector.get_money_flow(ts_code)
+    microstructure = collector.get_microstructure(ts_code, current_price=quote.get("close", 0.0))
 
     # 5. 近 30 天龙虎榜席位匹配
     lhb_records = fetch_lhb_seats(num_code, days=30)
@@ -130,6 +131,7 @@ def run_analyze(ticker_input: str, html_output: str | None = None) -> None:
         money_flow=money_flow,
         lhb_records=lhb_records,
         governance_info=gov_info,
+        microstructure=microstructure,
     )
 
     # 9. 渲染终端决断卡
