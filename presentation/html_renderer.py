@@ -344,7 +344,17 @@ def render_decision_card_html(card: dict[str, Any], output_path: str | None = No
             </div>
         </section>
 
-        <!-- 2. A股五维实盘支柱 -->
+        <!-- 2. 主力行为生命周期透视 -->
+        <section class="section-card">
+            <h2>⚡ 主力行为生命周期透视 (Main Force Lifecycle)</h2>
+            <div class="verdict-box" style="border-color: #38bdf8;">
+                <div class="verdict-title" style="color: #38bdf8;">当前阶段: {html.escape(card.get('main_force_stage', '【⏳ 存量震荡/等待方向期】'))}</div>
+                <div class="verdict-row"><strong>🔍 操盘透视:</strong> {html.escape(card.get('main_force_behavior', ''))}</div>
+                <div class="verdict-row" style="color:#f87171;"><strong>⚠️ 证伪/突变条件:</strong> {html.escape(card.get('main_force_risk', ''))}</div>
+            </div>
+        </section>
+
+        <!-- 3. A股五维实盘支柱 -->
         <section class="section-card">
             <h2>📊 A股五维实盘量化投研支柱 (Five Pillars)</h2>
             <div class="pillar-card" style="border-left-color: #38bdf8;">

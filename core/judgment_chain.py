@@ -145,14 +145,16 @@ class JudgmentChainRunner:
             else:
                 p_tape = f"日线均线: MA5偏离 {momentum.get('ma5_bias', 0.0):+.1f}%，换手率 {turnover:.1f}%"
 
-        # ─── 支柱 ❹ 资金动向 / 微观结构与监管余量 ───
+        # ─── 支柱 ❹ 资金动向 / 主力生命周期与监管余量 ───
         mf = money_flow or {}
         main_net = mf.get("main_net_wan", 0.0)
-        super_net = mf.get("super_large_net_wan", 0.0)
         pe_val = quote.get("pe", 0.0)
         pb_val = quote.get("pb", 0.0)
 
         micro = microstructure or {}
+        mf_stage = micro.get("main_force_stage", "【⏳ 存量震荡/等待方向期】")
+        mf_behavior = micro.get("main_force_behavior", "")
+        mf_risk = micro.get("main_force_risk", "")
         smart_q = micro.get("smart_q")
         smart_phase = micro.get("smart_phase", "NEUTRAL")
         smart_vwap = micro.get("smart_vwap", price)
@@ -163,34 +165,22 @@ class JudgmentChainRunner:
 
         flow_parts = []
         if smart_q is not None and smart_q > 0:
-            # 基于开源金工聪明钱 Q 因子与微观时段诊断
-            if smart_phase == "ACCUMULATION":
-                flow_parts.append(f"✓ 聪明钱呈【低吸潜伏】(Q={smart_q:.3f}，高效率推升买盘 {smart_buy:.1f}%)")
-            elif smart_phase == "DISTRIBUTION":
-                flow_parts.append(f"❌ 聪明钱呈【冲高派发】(Q={smart_q:.3f}，高位打压卖盘 {smart_sell:.1f}%)")
-            elif smart_phase == "PASSIVE_FALL":
-                flow_parts.append(f"❌ 聪明钱【放弃抵抗/破位下砸】(高效率砸盘占比 {smart_sell:.1f}%，现价低于知情成本线 {smart_vwap:.2f}元)")
-            else:
-                flow_parts.append(f"聪明钱 Q={smart_q:.3f} (知情成本 {smart_vwap:.2f}元 vs 现价 {price:.2f}元，多空博弈均衡)")
-
+            flow_parts.append(f"聪明钱 Q={smart_q:.3f} (知情成本 {smart_vwap:.2f}元 vs 现价 {price:.2f}元)")
             if auc_amt > 1000:
-                flow_parts.append(f"开盘竞价成交 {auc_amt:.0f}万元 ({auc_chg:+.2f}%)")
+                flow_parts.append(f"竞价抢筹 {auc_amt:.0f}万元 ({auc_chg:+.2f}%)")
             elif auc_amt > 0:
-                flow_parts.append(f"开盘竞价偏淡 ({auc_chg:+.2f}%, {auc_amt:.0f}万)")
+                flow_parts.append(f"竞价偏淡 ({auc_chg:+.2f}%, {auc_amt:.0f}万)")
         else:
-            if main_net < -2000:
-                flow_parts.append(f"⚠️ 主力大单净流出 {main_net/100:.1f} 亿元")
-            elif main_net > 2000:
-                flow_parts.append(f"✓ 主力大单净流入 +{main_net/100:.1f} 亿元")
-            else:
-                flow_parts.append(f"主力大单净额 {main_net/100:+.1f} 亿元")
+            flow_parts.append(f"主力大单净额 {main_net/100:+.1f} 亿元")
 
         if stock_track == "TRACK_B_INSTITUTIONAL":
             flow_parts.append(f"估值 PE(TTM) {pe_val:.1f}x / PB {pb_val:.1f}x")
         else:
-            flow_parts.append("距严重异动偏离线(100%)尚有充足安全余量")
+            flow_parts.append("距异动偏离线(100%)余量充足")
 
-        p_flow = "；".join(flow_parts)
+        p_flow = f"主力阶段: {mf_stage}\n  • 微观指纹: " + "；".join(flow_parts)
+        if mf_behavior:
+            p_flow += f"\n  • 操盘透视: {mf_behavior}"
 
         # ─── 支柱 ❺ 本土二元排雷 ───
         if is_fatal:
@@ -326,6 +316,9 @@ class JudgmentChainRunner:
             "trap_warnings": trap_warnings,
             "ladder_info": ladder_info,
             "microstructure": micro,
+            "main_force_stage": mf_stage,
+            "main_force_behavior": mf_behavior,
+            "main_force_risk": mf_risk,
         }
 
         # 门控机检自动修复

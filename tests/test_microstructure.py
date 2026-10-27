@@ -87,3 +87,63 @@ def test_smart_money_distribution_simulation():
     assert prof.smart_q > 1.0
     assert prof.smart_sell_ratio > 80.0
     assert prof.smart_phase == "DISTRIBUTION"
+
+
+def test_main_force_lockup_stage_detection():
+    """测试主升锁仓加速阶段识别：高连板龙头 + 底部主力成本低已大幅锁仓。"""
+    bars = []
+    base_time = dt.datetime(2026, 10, 20, 9, 35)
+
+    for i in range(100):
+        t = base_time + dt.timedelta(minutes=5 * i)
+        if i < 20:
+            # 早期低位 8.0 元启动，S 值高
+            bars.append(SimpleNamespace(
+                time=t,
+                open=8.0,
+                close=8.2,
+                volume_lots=1000.0,
+                amount=810000.0,
+            ))
+        else:
+            # 当前 12.0 元加速，换手平稳
+            bars.append(SimpleNamespace(
+                time=t,
+                open=12.0,
+                close=12.01,
+                volume_lots=1000.0,
+                amount=1200500.0,
+            ))
+
+    analyzer = MicrostructureAnalyzer()
+    ladder = {"board_level": 4, "is_leader": True, "broken_count": 0}
+    prof = analyzer.analyze(bars, current_price=12.0, ladder_info=ladder)
+
+    assert "主升锁仓" in prof.main_force_stage
+
+
+def test_main_force_passive_fall_stage_detection():
+    """测试主跌破位/无抵抗阴跌阶段识别：上方套牢盘重 + 破位且缺乏承接。"""
+    bars = []
+    base_time = dt.datetime(2026, 10, 20, 9, 35)
+
+    for i in range(100):
+        t = base_time + dt.timedelta(minutes=5 * i)
+        bars.append(SimpleNamespace(
+            time=t,
+            open=100.0,
+            close=99.8,
+            volume_lots=500.0,
+            amount=4990000.0,
+        ))
+
+    analyzer = MicrostructureAnalyzer()
+    momentum = {
+        "overhead_chip_pct": 75.0,
+        "current_drawdown": -22.0,
+        "is_bullish_ma": False,
+    }
+    prof = analyzer.analyze(bars, current_price=98.0, momentum=momentum)
+
+    assert "无抵抗阴跌" in prof.main_force_stage
+

@@ -226,8 +226,16 @@ class EltdxCollector:
             logger.warning(f"获取资金流异常: {e}")
             return {"main_net_wan": 0.0, "main_ratio": 0.0, "super_large_net_wan": 0.0, "large_net_wan": 0.0}
 
-    def get_microstructure(self, code_str: str, current_price: float = 0.0) -> dict[str, Any]:
-        """获取高频微观结构与知情交易分析 (聪明钱 Q 因子、APM 时段切割与集合竞价)."""
+    def get_microstructure(
+        self,
+        code_str: str,
+        current_price: float = 0.0,
+        daily_df: pd.DataFrame | None = None,
+        momentum: dict[str, Any] | None = None,
+        ladder_info: dict[str, Any] | None = None,
+        float_share: float = 0.0,
+    ) -> dict[str, Any]:
+        """获取高频微观结构、知情交易与主力生命周期分析 (开源金工聪明钱 Q、时段切割与换手沉淀)."""
         eltdx_code, ts_code = normalize_code(code_str)
 
         def _fetch():
@@ -244,7 +252,15 @@ class EltdxCollector:
             bars, ad = with_retry(_fetch, what="bars.get(5min)+auction_data")
             from core.microstructure import MicrostructureAnalyzer
             analyzer = MicrostructureAnalyzer()
-            prof = analyzer.analyze(bars, auction_data=ad, current_price=current_price)
+            prof = analyzer.analyze(
+                bars,
+                auction_data=ad,
+                current_price=current_price,
+                daily_df=daily_df,
+                momentum=momentum,
+                ladder_info=ladder_info,
+                float_share=float_share,
+            )
             return {
                 "smart_q": prof.smart_q,
                 "smart_vwap": prof.smart_vwap,
@@ -259,6 +275,11 @@ class EltdxCollector:
                 "auction_open_amt_wan": prof.auction_open_amt_wan,
                 "auction_open_chg_pct": prof.auction_open_chg_pct,
                 "verdict_text": prof.verdict_text,
+                "main_force_stage": prof.main_force_stage,
+                "main_force_behavior": prof.main_force_behavior,
+                "main_force_risk": prof.main_force_risk,
+                "cum_turnover_20d": prof.cum_turnover_20d,
+                "price_position_60d": prof.price_position_60d,
             }
         except Exception as e:
             logger.warning(f"获取微观结构异常: {e}")
@@ -276,6 +297,11 @@ class EltdxCollector:
                 "auction_open_amt_wan": 0.0,
                 "auction_open_chg_pct": 0.0,
                 "verdict_text": "微观分钟数据暂缺",
+                "main_force_stage": "【⏳ 存量震荡/等待方向期】",
+                "main_force_behavior": "微观数据暂缺，无法准确定性主力意图",
+                "main_force_risk": "需观察日线均线与放量信号",
+                "cum_turnover_20d": 0.0,
+                "price_position_60d": 0.5,
             }
 
     def get_financial_reports(self, code_str: str) -> dict[str, pd.DataFrame]:
