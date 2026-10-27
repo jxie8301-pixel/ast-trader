@@ -96,28 +96,31 @@ def render_decision_card_html(card: dict[str, Any], output_path: str | None = No
     if not youzi_rows:
         youzi_rows = '<div style="color:#94a3b8; padding: 15px;">当前盘口未触发一线游资战法模型，亦未见一线游资席位上榜</div>'
 
-    # 六大流派陪审团 HTML 渲染
-    panel_cards_html = ""
-    consensus_pct = 0.0
-    panel_verdict_str = "无陪审记录"
-    bull_arg_str = ""
-    bear_arg_str = ""
+    # 四维资金博弈雷达 HTML 渲染
+    matrix = card.get("capital_matrix")
+    matrix_cards_html = ""
+    synergy_score = 0.0
+    matrix_verdict_str = "无资金雷达数据"
+    dominant_force_str = "存量博弈"
+    bull_cat_str = ""
+    bear_rk_str = ""
 
-    if panel_res:
-        consensus_pct = panel_res.consensus_pct
-        panel_verdict_str = panel_res.panel_verdict
-        bull_arg_str = panel_res.bull_argument
-        bear_arg_str = panel_res.bear_argument
-        for v in panel_res.votes:
-            v_badge_color = "#10b981" if v.vote == "BUY" else ("#ef4444" if v.vote == "VETO" else "#f59e0b")
-            panel_cards_html += f"""
+    if matrix:
+        synergy_score = matrix.synergy_score
+        matrix_verdict_str = matrix.matrix_verdict
+        dominant_force_str = matrix.dominant_force
+        bull_cat_str = matrix.bull_catalyst
+        bear_rk_str = matrix.bear_risk
+        for d in matrix.dimensions:
+            d_badge_color = "#10b981" if d.status == "BULL" else ("#ef4444" if d.status == "VETO" else ("#f59e0b" if d.status == "NEUTRAL" else "#dc2626"))
+            matrix_cards_html += f"""
             <div class="juror-card">
                 <div class="juror-header">
-                    <span class="juror-name">{html.escape(v.juror_name)}</span>
-                    <span class="juror-school">{html.escape(v.school)}</span>
-                    <span class="juror-vote" style="background:{v_badge_color}">{v.vote}</span>
+                    <span class="juror-name">{html.escape(d.dimension_name)}</span>
+                    <span class="juror-school">得分: {d.score:.0f}分</span>
+                    <span class="juror-vote" style="background:{d_badge_color}">{d.status}</span>
                 </div>
-                <div class="juror-comment">{html.escape(v.comment)}</div>
+                <div class="juror-comment">{html.escape(d.summary)}</div>
             </div>
             """
 
@@ -358,24 +361,24 @@ def render_decision_card_html(card: dict[str, Any], output_path: str | None = No
             {pb_html if pb_html else '<div style="color:var(--text-dim)">未配置实操执行剧本</div>'}
         </section>
 
-        <!-- 3. 六大流派大师陪审团 (Investor Panel Jury) -->
+        <!-- 3. 四维资金博弈雷达 (Capital Force Matrix) -->
         <section class="section-card">
-            <h2>🏛️ 全球投资大师与游资陪审团 (Investor Panel Jury)</h2>
+            <h2>📊 四维资金博弈雷达 (Capital Force Matrix)</h2>
             <div class="jury-overview">
                 <div style="display:flex; justify-content:space-between; align-items:center;">
-                    <span style="font-weight:700;">裁决总评: {panel_verdict_str}</span>
-                    <span style="font-size:13px; color:var(--text-dim);">多头赞成率: <strong style="color:var(--neon-green); font-size:16px;">{consensus_pct}%</strong></span>
+                    <span style="font-weight:700;">博弈研判: {html.escape(matrix_verdict_str)} (主导力量: <strong style="color:var(--neon-cyan)">{html.escape(dominant_force_str)}</strong>)</span>
+                    <span style="font-size:13px; color:var(--text-dim);">合力指数: <strong style="color:var(--neon-green); font-size:18px;">{synergy_score:.1f}</strong> / 100</span>
                 </div>
                 <div class="progress-bar">
-                    <div class="progress-fill" style="width: {consensus_pct}%;"></div>
+                    <div class="progress-fill" style="width: {min(max(synergy_score, 0), 100):.0f}%;"></div>
                 </div>
                 <div style="margin-top:10px; font-size:13px;">
-                    <p style="color:#34d399; margin-bottom:4px;"><strong>▲ 多方主张:</strong> {html.escape(bull_arg_str)}</p>
-                    <p style="color:#f87171;"><strong>▼ 空方质疑:</strong> {html.escape(bear_arg_str)}</p>
+                    <p style="color:#34d399; margin-bottom:4px;"><strong>▲ 多头驱动核心:</strong> {html.escape(bull_cat_str)}</p>
+                    <p style="color:#f87171;"><strong>▼ 空头压制/风险:</strong> {html.escape(bear_rk_str)}</p>
                 </div>
             </div>
             <div class="juror-grid">
-                {panel_cards_html}
+                {matrix_cards_html}
             </div>
         </section>
 

@@ -43,6 +43,29 @@ def test_html_rendering():
         "trap_warnings": [],
     }
 
+    from core.capital_matrix import CapitalMatrixRadar
+    from core.execution_playbook import PlaybookBuilder
+
+    radar = CapitalMatrixRadar()
+    sample_card["capital_matrix"] = radar.evaluate(
+        quote={"close": 23.50, "pe": 20.0, "pb": 2.5, "turnover_ratio": 5.0, "total_mv": 120.0},
+        momentum={"is_bullish_ma": True, "volume_ratio": 1.8, "ma5_bias": 1.2},
+        flags=[],
+        trap_warnings=[],
+        matched_personas=["章盟主"],
+        concepts=["消费电子"],
+    )
+
+    builder = PlaybookBuilder()
+    sample_card["execution_playbook"] = builder.build(
+        quote={"close": 23.50, "pre_close": 22.80},
+        momentum={"support_level": 22.50, "resistance_level": 25.0},
+        matched_personas=["章盟主"],
+        action="BUY",
+        ladder_info=None,
+        fatal_flag=False,
+    )
+
     with tempfile.TemporaryDirectory() as tmpdir:
         out_file = os.path.join(tmpdir, "test_report.html")
         saved_path = render_decision_card_html(sample_card, output_path=out_file)
@@ -56,5 +79,7 @@ def test_html_rendering():
         assert "002273.SZ" in content
         assert "章盟主" in content
         assert "五节点因果决断卡" in content
+        assert "四维资金博弈雷达" in content
+        assert "实盘战术执行手册" in content
         assert "买入" in content
         assert "20%" in content

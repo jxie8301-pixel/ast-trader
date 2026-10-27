@@ -50,20 +50,18 @@ def print_decision_card(card: dict[str, Any]) -> None:
         body_lines.append(f"  • 止盈目标: {getattr(pb, 'take_profit_target', '')}")
         body_lines.append(f"  • 铁律死锁: [bold red]{getattr(pb, 'invalidation_rule', '')}[/bold red]")
 
-    # 2. 展现六大投资流派陪审团盲盒投票与多空激辩 (Investor Panel Jury)
-    panel_res = card.get("panel_review")
-    if panel_res:
-        body_lines.append(f"\n[bold magenta]🏛️ 全球大师与游资陪审团终审 (Investor Jury Panel):[/bold magenta]")
-        body_lines.append(f"  • 陪审团裁决: [bold]{panel_res.panel_verdict}[/bold] (多头赞成率: [bold cyan]{panel_res.consensus_pct}%[/bold cyan])")
-        body_lines.append(f"  • 投票明细: 看多 [bold green]{panel_res.buy_votes}[/bold green] 票 | "
-                          f"观望 [bold yellow]{panel_res.hold_votes}[/bold yellow] 票 | "
-                          f"否决 [bold red]{panel_res.veto_votes}[/bold red] 票")
-        body_lines.append(f"  • [bold green]多头核心主张:[/bold green] {panel_res.bull_argument}")
-        body_lines.append(f"  • [bold red]空头防守质疑:[/bold red] {panel_res.bear_argument}")
-        body_lines.append("  • 评审员代表签署:")
-        for v in panel_res.votes:
-            v_style = "[bold green]BUY[/bold green]" if v.vote == "BUY" else ("[bold red]VETO[/bold red]" if v.vote == "VETO" else "[yellow]HOLD[/yellow]")
-            body_lines.append(f"    - {v.school} {v.juror_name}: {v_style} -> {v.comment}")
+    # 2. 展现四维资金博弈雷达 (Capital Force Matrix)
+    matrix = card.get("capital_matrix")
+    if matrix:
+        body_lines.append(f"\n[bold magenta]📊 四维资金博弈雷达 (Capital Force Matrix):[/bold magenta]")
+        body_lines.append(f"  • 资金综合裁决: [bold]{matrix.matrix_verdict}[/bold] (合力评分: [bold cyan]{matrix.synergy_score:.1f}分[/bold cyan])")
+        body_lines.append(f"  • 主导资金力量: [bold yellow]{matrix.dominant_force}[/bold yellow]")
+        body_lines.append(f"  • [bold green]▲ 多头进攻逻辑:[/bold green] {matrix.bull_catalyst}")
+        body_lines.append(f"  • [bold red]▼ 空头防守风险:[/bold red] {matrix.bear_risk}")
+        body_lines.append("  • 主力维度客观透视:")
+        for d in matrix.dimensions:
+            s_style = "[bold green]BULL[/bold green]" if d.status == "BULL" else ("[bold red]VETO[/bold red]" if d.status == "VETO" else ("[yellow]NEUTRAL[/yellow]" if d.status == "NEUTRAL" else "[red]BEAR[/red]"))
+            body_lines.append(f"    - {d.dimension_name}: {s_style} ({d.score:.0f}分) -> {d.summary}")
 
     top3 = card.get("top3_risks", [])
     if top3:

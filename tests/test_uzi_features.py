@@ -4,11 +4,57 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from core.capital_matrix import CapitalMatrixRadar
 from core.execution_playbook import PlaybookBuilder
 from core.investor_panel import InvestorPanelJury
 from core.red_flags import RedFlagItem, LEVEL_FATAL
 from screener.ladder_analyzer import LadderAnalyzer, ThemeAggregate
 from screener.tracker import record_screen_picks, load_tracker_records
+
+
+def test_capital_matrix_radar_veto_on_fatal_flag():
+    """验证当标的命中致命财务红旗时，四维资金雷达机构力量触发 VETO 否决，综合判定为机构一票否决。"""
+    radar = CapitalMatrixRadar()
+    fatal_flag = RedFlagItem(
+        id="beneish_manipulation",
+        framework="Beneish M-Score",
+        level=LEVEL_FATAL,
+        title="Beneish M-Score 财务操纵预警",
+        value=-1.2,
+        threshold="M > -1.78",
+        evidence="M-Score=-1.2 > -1.78",
+        node="quality",
+    )
+    result = radar.evaluate(
+        quote={"close": 25.0, "pe": 15.0, "pb": 2.0, "turnover_ratio": 6.0},
+        momentum={"is_bullish_ma": True, "volume_ratio": 2.0},
+        flags=[fatal_flag],
+        trap_warnings=[],
+        matched_personas=["章盟主"],
+        concepts=["半导体"],
+    )
+
+    inst_dim = next(d for d in result.dimensions if d.dimension_id == "institutional")
+    assert inst_dim.status == "VETO"
+    assert "一票否决" in result.matrix_verdict
+    assert result.synergy_score < 40.0
+
+
+def test_capital_matrix_radar_synergy_bull():
+    """验证优质个股在资金共振、均线多头和游资主升时，四维资金雷达给出高分多头共振判定。"""
+    radar = CapitalMatrixRadar()
+    result = radar.evaluate(
+        quote={"close": 50.0, "pe": 22.0, "pb": 3.0, "turnover_ratio": 8.0, "total_mv": 150.0},
+        momentum={"is_bullish_ma": True, "volume_ratio": 2.2, "ma5_bias": 2.5},
+        flags=[],
+        trap_warnings=[],
+        matched_personas=["孙哥", "炒股养家"],
+        concepts=["人形机器人", "AI算力"],
+        ladder_info={"is_leader": True, "board_level": 3},
+    )
+
+    assert result.synergy_score >= 70.0
+    assert "多头共振" in result.matrix_verdict or "游资" in result.dominant_force
 
 
 def test_investor_panel_jury_veto_on_fatal_flag():

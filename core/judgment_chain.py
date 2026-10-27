@@ -4,18 +4,18 @@ from __future__ import annotations
 from typing import Any
 
 import config
+from core.capital_matrix import CapitalMatrixRadar
 from core.execution_playbook import PlaybookBuilder
-from core.investor_panel import InvestorPanelJury
 from lint.validator import LintValidator
 from .red_flags import LEVEL_FATAL, RedFlagItem, get_top3_risks, has_fatal_red_flags
 
 
 class JudgmentChainRunner:
-    """五节点因果判断链执行器 (集成流派陪审团与实操执行剧本)."""
+    """五节点因果判断链执行器 (集成四维资金博弈雷达与实操执行剧本)."""
 
     def __init__(self) -> None:
         self.validator = LintValidator()
-        self.jury = InvestorPanelJury()
+        self.matrix_radar = CapitalMatrixRadar()
         self.playbook_builder = PlaybookBuilder()
 
     def run(
@@ -106,15 +106,16 @@ class JudgmentChainRunner:
             else:
                 invalidation_line = f"开盘跌破 MA5 ({ma5:.2f} 元) 或日内跌破分时均线 -3% 无条件止损平仓"
 
-        # ─── 六大流派陪审团盲盒投票 ───
+        # ─── 四维资金博弈雷达解构 (机构/游资/量化/散户) ───
         persona_names = [p.get("youzi_name", "") for p in personas if isinstance(p, dict)]
-        panel_review = self.jury.evaluate(
+        capital_matrix = self.matrix_radar.evaluate(
             quote=quote,
             momentum=momentum,
             flags=flags,
             trap_warnings=trap_warnings,
             matched_personas=persona_names,
             concepts=concept_list,
+            ladder_info=ladder_info,
         )
 
         # ─── 实操执行剧本战术卡 ───
@@ -146,7 +147,7 @@ class JudgmentChainRunner:
             "matched_youzi": matched_youzi,
             "matched_personas": personas,
             "trap_warnings": trap_warnings,
-            "panel_review": panel_review,
+            "capital_matrix": capital_matrix,
             "playbook": playbook,
             "ladder_info": ladder_info,
         }
