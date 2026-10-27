@@ -281,12 +281,23 @@ class EltdxCollector:
             except Exception:
                 pass
 
-            # 2. 减持计划
+            # 2. 减持计划 (严格核验在途计划，排除历史已届满/已实施完毕的旧记录)
             try:
                 scp = c.f10.shareholder_change_plans(num_code)
                 if scp and scp.result_sets and scp.result_sets[0].rows:
-                    # 如果有近期的减持计划
-                    res["has_reduction_plan"] = len(scp.result_sets[0].rows) > 0
+                    today_str = datetime.now().strftime("%Y-%m-%d")
+                    active_plans = []
+                    for r in scp.result_sets[0].rows:
+                        direction = str(r.get("N002", ""))
+                        status = str(r.get("N011", ""))
+                        end_date = str(r.get("N010", "") or "")
+                        # 仅在方向为减持、未标注完成、且截止日在未来或近期的属于在途计划
+                        is_reduction = ("减" in direction)
+                        is_completed = ("完" in status)
+                        is_active_date = (end_date >= today_str) if end_date else False
+                        if is_reduction and not is_completed and is_active_date:
+                            active_plans.append(r)
+                    res["has_reduction_plan"] = len(active_plans) > 0
             except Exception:
                 pass
 

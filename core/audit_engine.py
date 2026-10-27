@@ -853,21 +853,23 @@ class AuditEngine:
         ta = _safe_float(b_now.get("total_assets"))
         lt_now = _safe_float(b_now.get("lt_eqt_invest"), 0.0)
 
-        # 长期股权投资大幅波动 (需 2 期)
+        # 长期股权投资大幅波动 (需 2 期，且遵循会计重要性原则：占总资产 > 1% 或绝对金额变动 > 5000 万)
         if len(bs) >= 2 and ta and ta > 0:
             b_prev = bs.iloc[-2]
             lt_prev = _safe_float(b_prev.get("lt_eqt_invest"), 0.0)
             if lt_prev and lt_prev > 0 and lt_now:
                 chg = (lt_now - lt_prev) / lt_prev
-                if abs(chg) > 0.30:
+                # 重要性门槛: 长期股权投资占总资产至少达到 1% 或变动绝对金额超 5000 万，微小体量排除误报
+                is_material = (lt_now / ta > 0.01) or (abs(lt_now - lt_prev) > 50_000_000)
+                if is_material and abs(chg) > 0.30:
                     flags.append(RedFlagItem(
                         id=make_flag_id("RelatedParty", "lt_equity_fluctuation"),
                         framework="Related-Party Exposure",
                         level=LEVEL_HIGH if chg < 0 else LEVEL_MEDIUM,
                         title="长期股权投资大幅波动 (参股公司潜在权益法爆雷风险)",
                         value=round(chg, 3),
-                        threshold="变动幅度 > 30%",
-                        evidence=f"长期股权投资由 {lt_prev/1e8:.2f} 亿变为 {lt_now/1e8:.2f} 亿 (变动 {chg*100:+.1f}%)",
+                        threshold="变动幅度 > 30% 且占总资产 > 1%",
+                        evidence=f"长期股权投资由 {lt_prev/1e8:.2f} 亿变为 {lt_now/1e8:.2f} 亿 (变动 {chg*100:+.1f}%)，占总资产 {lt_now/ta*100:.2f}%",
                         node="quality",
                         metric_refs=["related_party"],
                     ))
