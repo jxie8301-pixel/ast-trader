@@ -60,8 +60,8 @@ def print_decision_card(card: dict[str, Any]) -> None:
         "[dim]─" * 70 + "[/dim]",
         f"[bold yellow]🎯 实战决断:[/bold yellow] [bold]{card.get('decision_title', '')}[/bold] (建议仓位: [bold yellow]{card.get('position_cap', 0.0)*100:.0f}%[/bold yellow])",
         f"[bold yellow]📌 核心矛盾:[/bold yellow] {card.get('core_contradiction', '')}",
-        f"[bold yellow]⚡ 实盘战术:[/bold yellow] {card.get('action_tactic', '')}",
-        f"[bold red]🛑 实战防线 (T+1纪律):[/bold red] {card.get('invalidation_line', '')}",
+        f"[bold yellow]⚡ 实盘战术 (双轨实操指引):[/bold yellow]\n  {card.get('action_tactic', '')}",
+        f"[bold red]🛑 实战防线 (T+1纪律):[/bold red]\n  {card.get('invalidation_line', '')}",
     ]
 
     panel = Panel(

@@ -380,7 +380,12 @@ class MainForceStateEngine:
         # 聪明钱 Q 因子处于高效率极值，即使单笔成交看起来都是中小单，但知情占比显著偏向一方
         if smart_q < 0.985 or smart_q > 1.025:
             audit.order_split_detected = True
-            direction = "主动低吸收集" if smart_buy_ratio > smart_sell_ratio else "算法被动拆单派发"
+            if price_position_60d >= 0.80:
+                direction = "高位封单扫货/锁仓推升" if smart_buy_ratio > smart_sell_ratio else "算法高位拆单派发"
+            elif price_position_60d <= 0.40:
+                direction = "低位主动吸筹收集" if smart_buy_ratio > smart_sell_ratio else "算法低位压盘逼空"
+            else:
+                direction = "中位加速接力" if smart_buy_ratio > smart_sell_ratio else "算法被动拆单减仓"
             audit.order_split_detail = (
                 f"微观高频 Q 因子 ({smart_q:.3f}) 穿透表面中小单假象，识别主力正以算法拆单进行【{direction}】，"
                 f"知情买卖效率比为 {smart_buy_ratio:.1f}% vs {smart_sell_ratio:.1f}%。"
