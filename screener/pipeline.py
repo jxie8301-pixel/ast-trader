@@ -1,16 +1,14 @@
-"""Three-tier market screener pipeline for AST-Trader using eltdx limit board ladder."""
+"""Three-tier market screener pipeline orchestrator for AST-Trader."""
 from __future__ import annotations
 
-import concurrent.futures
 import logging
 from typing import Any
 
-import config
-from core.audit_engine import AuditEngine
-from core.game_features import GameFeatureExtractor
-from core.red_flags import has_fatal_red_flags
-from data.eltdx_client import normalize_code, open_client, with_retry
+from data.eltdx_client import open_client
 from data.eltdx_collector import EltdxCollector
+from .filter_audit import filter_audit
+from .filter_liquidity import filter_liquidity
+from .rank_composite import rank_composite
 
 logger = logging.getLogger("ast_trader.screener")
 
@@ -20,8 +18,6 @@ class ScreenerPipeline:
 
     def __init__(self) -> None:
         self.collector = EltdxCollector()
-        self.audit_engine = AuditEngine()
-        self.feature_extractor = GameFeatureExtractor()
 
     def run_screener(self, mode: str = "close", top_n: int = 10) -> list[dict[str, Any]]:
         """执行全市场短线漏斗筛选。
@@ -44,101 +40,15 @@ class ScreenerPipeline:
         full_codes = [r.get("full_code") for r in ladder_rows if r.get("full_code")]
         quotes_map = self._fetch_quotes_map(full_codes)
 
-        t1_passed = []
-        for r in ladder_rows:
-            fcode = r.get("full_code", "")
-            code_num = r.get("code", "")
-            name = r.get("name", f"标的_{code_num}")
-            board_level = r.get("board_level") or 1
-            reason = r.get("limit_reason") or "热门题材"
-
-            q = quotes_map.get(fcode, {})
-            close = q.get("close", 0.0)
-            pct = q.get("pct_chg", 0.0)
-            amount = q.get("amount", 0.0)
-
-            # 剔除 ST / *ST
-            if "ST" in name:
-                continue
-
-            # 若行情快照取不到金额，采用天梯封单金额兜底
-            seal_amt = float(r.get("seal_amount") or 0.0)
-            effective_amt = amount if amount > 0 else seal_amt
-
-            # 初筛通过
-            t1_passed.append({
-                "code": code_num,
-                "full_code": fcode,
-                "name": name,
-                "close": close,
-                "pct_chg": pct,
-                "amount": effective_amt,
-                "board_level": board_level,
-                "limit_reason": reason,
-                "seal_amt": seal_amt,
-            })
-
-        logger.info(f"Tier 1 初筛完成: 保留 {len(t1_passed)} 只标的")
+        t1_passed = filter_liquidity(ladder_rows, quotes_map)
 
         # ─── Step 3: Tier 2 机械排雷一票否决 (针对初筛前 15 只优质标的并发排雷) ───
-        candidates_to_audit = t1_passed[:15]
-        t2_passed = []
-
-        def _audit_single(item: dict[str, Any]) -> dict[str, Any] | None:
-            code_num = item["code"]
-            try:
-                gov = self.collector.get_f10_governance_and_concept(code_num)
-                if gov.get("pledge_ratio", 0.0) > config.PLEDGE_FATAL_RATIO:
-                    logger.info(f"剔除高质押暴雷标的: {code_num} {item['name']}")
-                    return None
-                item["concepts"] = gov.get("concepts", [item["limit_reason"]])
-                return item
-            except Exception as e:
-                logger.debug(f"治理排雷跳过 {code_num}: {e}")
-                return item
-
-        with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
-            future_to_item = {executor.submit(_audit_single, item): item for item in candidates_to_audit}
-            for fut in concurrent.futures.as_completed(future_to_item):
-                res = fut.result()
-                if res is not None:
-                    t2_passed.append(res)
-
-        logger.info(f"Tier 2 机械排雷完成: 保留 {len(t2_passed)} 只标的")
+        t2_passed = filter_audit(t1_passed, self.collector, max_workers=5, top_audit_count=15)
 
         # ─── Step 4: Tier 3 资金流与连板合力排序 (并发获取主力资金流) ───
-        def _fetch_mf(c: dict[str, Any]) -> dict[str, Any]:
-            code_num = c["code"]
-            try:
-                mf = self.collector.get_money_flow(code_num)
-                c["main_net_wan"] = mf.get("main_net_wan", 0.0)
-                c["main_ratio"] = mf.get("main_ratio", 0.0)
-            except Exception:
-                c["main_net_wan"] = round(c["seal_amt"] / 10000.0, 1)
-                c["main_ratio"] = 5.0
+        final_top = rank_composite(t2_passed, self.collector, top_n=top_n, max_workers=5)
 
-            # 综合评分: 连板高度(40%) + 封单/成交规模(30%) + 涨幅(30%)
-            bl = c.get("board_level") or 1
-            score = (
-                bl * 20.0
-                + min(c.get("amount", 0.0) / 1e8, 30.0)
-                + c.get("pct_chg", 9.9) * 2.0
-            )
-            c["rank_score"] = round(score, 1)
-            return c
-
-        with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
-            t2_passed = list(executor.map(_fetch_mf, t2_passed))
-
-        ranked = sorted(t2_passed, key=lambda x: x.get("rank_score", 0.0), reverse=True)
-        final_top = ranked[:top_n]
-
-        # 附加明日交易剧本
-        for item in final_top:
-            price = item["close"]
-            item["plan_high_open"] = f"{item['limit_reason']}板位接力: 高开1%~3%轻仓试错 (回踩支撑低吸)"
-            item["plan_stop_loss"] = f"跌破今日涨停价或分时跌破 -3% 坚决止损"
-
+        logger.info(f"全市场短线漏斗筛选完毕: 最终筛选输出 Top {len(final_top)} 标的")
         return final_top
 
     def _fetch_ladder_rows(self) -> list[dict[str, Any]]:

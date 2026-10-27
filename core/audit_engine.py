@@ -66,6 +66,13 @@ class AuditEngine:
         if quote_info:
             flags.extend(self._check_valuation(balance_df, income_df, quote_info))
 
+        # 10. 商誉与资产减值黑天鹅排查
+        flags.extend(self._check_goodwill_impairment(balance_df))
+
+        # 11. 股东户数变动与筹码散户化
+        if governance_info:
+            flags.extend(self._check_shareholder_dispersion(governance_info))
+
         return flags
 
     # ─────────────────────────────────────────────────────────────
@@ -465,6 +472,53 @@ class AuditEngine:
                 threshold="PB > 8 & ROE < 5%",
                 evidence=f"市净率 PB={pb:.1f} 倍，而年化 ROE 仅 {roe*100:.1f}%，纯情绪题材炒作",
                 node="odds",
+            ))
+
+        return flags
+
+    # ─────────────────────────────────────────────────────────────
+    # 10. 商誉与资产减值黑天鹅排查
+    # ─────────────────────────────────────────────────────────────
+    def _check_goodwill_impairment(self, bs: pd.DataFrame) -> list[RedFlagItem]:
+        flags = []
+        if bs.empty:
+            return flags
+
+        b = bs.iloc[-1]
+        eq = _safe_float(b.get("total_equity"))
+        goodwill = _safe_float(b.get("goodwill"), 0.0)
+
+        if eq and eq > 0 and goodwill and (goodwill / eq) > 0.30:
+            gw_ratio = goodwill / eq
+            flags.append(RedFlagItem(
+                id=make_flag_id("Goodwill", "high_goodwill_ratio"),
+                framework="Asset Impairment",
+                level=LEVEL_FATAL if gw_ratio > 0.50 else LEVEL_HIGH,
+                title="巨额商誉悬顶 (存在年报商誉大额减值暴雷风险)",
+                value=round(gw_ratio, 3),
+                threshold="> 30%",
+                evidence=f"账面商誉={goodwill/1e8:.2f} 亿，占净资产比例高达 {gw_ratio*100:.1f}%",
+                node="quality",
+            ))
+
+        return flags
+
+    # ─────────────────────────────────────────────────────────────
+    # 11. 股东户数变动与筹码散户化 (主力出逃排查)
+    # ─────────────────────────────────────────────────────────────
+    def _check_shareholder_dispersion(self, gov: dict[str, Any]) -> list[RedFlagItem]:
+        flags = []
+        holder_change_pct = _safe_float(gov.get("holder_change_pct"))
+        if holder_change_pct is not None and holder_change_pct > 20.0:
+            flags.append(RedFlagItem(
+                id=make_flag_id("Chip", "shareholder_surge"),
+                framework="Shareholder Dispersion",
+                level=LEVEL_HIGH,
+                title="筹码急剧发散 (散户接盘，主力高位出逃)",
+                value=round(holder_change_pct, 1),
+                threshold="> 20%",
+                evidence=f"最新一期股东户数环比激增 {holder_change_pct:.1f}%，筹码集中度迅速恶化",
+                node="path",
             ))
 
         return flags

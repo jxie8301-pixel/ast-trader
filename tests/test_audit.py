@@ -5,7 +5,7 @@ import pandas as pd
 import pytest
 
 from core.audit_engine import AuditEngine
-from core.red_flags import LEVEL_FATAL
+from core.red_flags import LEVEL_FATAL, LEVEL_HIGH
 
 
 def test_beneish_m_score_fraud_detection():
@@ -23,7 +23,7 @@ def test_beneish_m_score_fraud_detection():
     ]
     cf_data = [
         {"n_cashflow_act": 15.0},
-        {"n_cashflow_act": -30.0}, # 净利润 50 亿但现金流为负 30 亿
+        {"n_cashflow_act": -30.0},  # 净利润 50 亿但现金流为负 30 亿
     ]
 
     flags = engine.run_audit(
@@ -35,7 +35,7 @@ def test_beneish_m_score_fraud_detection():
     # 必须检出致命红旗或高危红旗
     m_flags = [f for f in flags if f.framework == "Beneish M-Score"]
     assert len(m_flags) > 0
-    assert any(f.level in (LEVEL_FATAL, "🟠") for f in m_flags)
+    assert any(f.level in (LEVEL_FATAL, LEVEL_HIGH) for f in m_flags)
 
 
 def test_governance_fatal_pledge():
@@ -75,3 +75,36 @@ def test_altman_z_score_distress():
     z_flags = [f for f in flags if f.framework == "Altman Z-Score"]
     assert len(z_flags) == 1
     assert z_flags[0].level == LEVEL_FATAL
+
+
+def test_goodwill_impairment_risk():
+    """测试商誉占净资产超过 50% 触发致命红旗。"""
+    engine = AuditEngine()
+    bs_data = [
+        {"total_assets": 200.0, "total_equity": 100.0, "goodwill": 60.0}  # 商誉 60 亿，净资产 100 亿 (占比 60%)
+    ]
+    flags = engine.run_audit(
+        balance_df=pd.DataFrame(bs_data),
+        cashflow_df=pd.DataFrame(),
+        income_df=pd.DataFrame(),
+    )
+    gw_flags = [f for f in flags if f.framework == "Asset Impairment"]
+    assert len(gw_flags) == 1
+    assert gw_flags[0].level == LEVEL_FATAL
+
+
+def test_shareholder_dispersion_risk():
+    """测试股东户数激增超过 20% 触发筹码发散预警。"""
+    engine = AuditEngine()
+    gov_info = {
+        "holder_change_pct": 28.5,  # 环比增 28.5%
+    }
+    flags = engine.run_audit(
+        balance_df=pd.DataFrame(),
+        cashflow_df=pd.DataFrame(),
+        income_df=pd.DataFrame(),
+        governance_info=gov_info,
+    )
+    chip_flags = [f for f in flags if f.framework == "Shareholder Dispersion"]
+    assert len(chip_flags) == 1
+    assert chip_flags[0].level == LEVEL_HIGH

@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import sys
 import os
+import logging
 from datetime import datetime
 
 # Windows 终端 UTF-8 编码适配
@@ -14,6 +15,15 @@ if sys.platform == "win32":
     except Exception:
         pass
     os.environ.setdefault("PYTHONIOENCODING", "utf-8")
+
+# 日志统一落盘配置
+os.makedirs("logs", exist_ok=True)
+logging.basicConfig(
+    filename="logs/ast_trader.log",
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    encoding="utf-8",
+)
 
 from core.audit_engine import AuditEngine
 from core.game_features import GameFeatureExtractor
