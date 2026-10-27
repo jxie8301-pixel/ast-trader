@@ -162,13 +162,10 @@ def list_archives() -> list[dict]:
         out.append({"period": period, "filename": _with_prefix(name), "filesize": size})
 
     if skipped:
-        # 空壳是**预期内的正常现象**（报告期在未来，或早期数据不全），不是失败。
-        # 走普通输出而不是 log_fail —— 否则每次列清单都往日志里写一行 [eltdx][FAIL]，
-        # 真正的失败会被淹没（仓库 v8.10 的教训：写了的提示从没出现过，等于没写）。
-        print(f"[eltdx] 财报清单跳过 {len(skipped)} 个空壳期（<{MIN_ARCHIVE_BYTES}B）: "
-              f"{', '.join(skipped[:5])}{' …' if len(skipped) > 5 else ''}",
-              file=sys.stderr)
-
+        import logging
+        logging.getLogger('ast_trader.eltdx').debug(
+            f'[eltdx] 财报清单跳过 {len(skipped)} 个空壳期: {skipped[:3]}'
+        )
     out.sort(key=lambda d: d["period"], reverse=True)
     return out
 
