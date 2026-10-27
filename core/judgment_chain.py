@@ -4,15 +4,19 @@ from __future__ import annotations
 from typing import Any
 
 import config
+from core.execution_playbook import PlaybookBuilder
+from core.investor_panel import InvestorPanelJury
 from lint.validator import LintValidator
 from .red_flags import LEVEL_FATAL, RedFlagItem, get_top3_risks, has_fatal_red_flags
 
 
 class JudgmentChainRunner:
-    """五节点因果判断链执行器。"""
+    """五节点因果判断链执行器 (集成流派陪审团与实操执行剧本)."""
 
     def __init__(self) -> None:
         self.validator = LintValidator()
+        self.jury = InvestorPanelJury()
+        self.playbook_builder = PlaybookBuilder()
 
     def run(
         self,
@@ -25,12 +29,15 @@ class JudgmentChainRunner:
         matched_youzi: list[dict[str, Any]],
         trap_warnings: list[str],
         matched_personas: list[dict[str, Any]] | None = None,
+        concepts: list[str] | None = None,
+        ladder_info: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """按因果判断链合成决断卡。"""
         price = quote.get("close", 0.0)
         ma5 = momentum.get("ma5", price)
         ma20 = momentum.get("ma20", price)
         personas = matched_personas or []
+        concept_list = concepts or []
 
         # ─── 节点 ① 质地（成色与造假概率）───
         fatal_quality = [f for f in flags if f.level == LEVEL_FATAL and f.node == "quality"]
@@ -99,6 +106,28 @@ class JudgmentChainRunner:
             else:
                 invalidation_line = f"开盘跌破 MA5 ({ma5:.2f} 元) 或日内跌破分时均线 -3% 无条件止损平仓"
 
+        # ─── 六大流派陪审团盲盒投票 ───
+        persona_names = [p.get("youzi_name", "") for p in personas if isinstance(p, dict)]
+        panel_review = self.jury.evaluate(
+            quote=quote,
+            momentum=momentum,
+            flags=flags,
+            trap_warnings=trap_warnings,
+            matched_personas=persona_names,
+            concepts=concept_list,
+        )
+
+        # ─── 实操执行剧本战术卡 ───
+        act_key = "AVOID" if decision_gear == "回避" else ("BUY" if decision_gear == "买入" else "WAIT")
+        playbook = self.playbook_builder.build(
+            quote=quote,
+            momentum=momentum,
+            matched_personas=persona_names,
+            action=act_key,
+            ladder_info=ladder_info,
+            fatal_flag=is_fatal,
+        )
+
         card = {
             "ticker": ticker,
             "name": name,
@@ -117,6 +146,9 @@ class JudgmentChainRunner:
             "matched_youzi": matched_youzi,
             "matched_personas": personas,
             "trap_warnings": trap_warnings,
+            "panel_review": panel_review,
+            "playbook": playbook,
+            "ladder_info": ladder_info,
         }
 
         # 门控校验 (若违规自动修正)

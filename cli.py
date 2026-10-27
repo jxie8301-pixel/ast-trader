@@ -35,8 +35,9 @@ from data.eltdx_client import normalize_code
 from data.eltdx_collector import EltdxCollector
 from data.supplement_api import fetch_lhb_seats
 from presentation.html_renderer import render_decision_card_html
-from presentation.terminal_view import print_decision_card, print_screener_table
+from presentation.terminal_view import print_decision_card, print_screener_table, print_tracker_summary
 from screener.pipeline import ScreenerPipeline
+from screener.tracker import evaluate_tracker_performance
 
 
 def run_analyze(ticker_input: str, html_output: str | None = None) -> None:
@@ -94,7 +95,7 @@ def run_analyze(ticker_input: str, html_output: str | None = None) -> None:
     )
     matched_personas = evaluate_youzi_personas(tape_features)
 
-    # 6. 五节点判断链装配
+    # 6. 五节点判断链装配 (集成六大流派陪审团与实操执行剧本)
     runner = JudgmentChainRunner()
     card = runner.run(
         ticker=ts_code,
@@ -106,12 +107,13 @@ def run_analyze(ticker_input: str, html_output: str | None = None) -> None:
         matched_youzi=matched_youzi,
         trap_warnings=trap_warnings,
         matched_personas=matched_personas,
+        concepts=gov_info.get("concepts", []),
     )
 
-    # 6. 渲染终端决断卡
+    # 7. 渲染终端决断卡
     print_decision_card(card)
 
-    # 7. 若指定 --html，则生成离线研报
+    # 8. 若指定 --html，则生成离线研报
     if html_output is not None:
         saved_path = render_decision_card_html(card, output_path=html_output if html_output != "default" else None)
         print(f"\n📊 离线 HTML 研报已成功生成: {saved_path}")
@@ -124,10 +126,17 @@ def run_screen(mode: str, top_n: int) -> None:
     print_screener_table(results, mode=mode)
 
 
+def run_track() -> None:
+    """运行实盘选股追踪胜率复盘。"""
+    collector = EltdxCollector()
+    summary = evaluate_tracker_performance(collector)
+    print_tracker_summary(summary)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="AST-Trader: A股短线量化投研系统 (买方审计 + 游资博弈)",
-        epilog="示例: python cli.py analyze 002273 或 python cli.py screen --mode close",
+        epilog="示例: python cli.py analyze 002273 或 python cli.py screen --mode close 或 python cli.py track",
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
@@ -147,12 +156,17 @@ def main() -> None:
     screen_parser.add_argument("--mode", choices=["close", "noon"], default="close", help="筛选模式 (close 盘后 / noon 午盘)")
     screen_parser.add_argument("--top", type=int, default=10, help="输出候选上限 (默认 10)")
 
+    # track
+    subparsers.add_parser("track", help="实盘选股收益追踪与胜率复盘账本")
+
     args = parser.parse_args()
 
     if args.command == "analyze":
         run_analyze(args.ticker, html_output=args.html)
     elif args.command == "screen":
         run_screen(mode=args.mode, top_n=args.top)
+    elif args.command == "track":
+        run_track()
 
 
 if __name__ == "__main__":

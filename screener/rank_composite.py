@@ -5,10 +5,12 @@ import concurrent.futures
 import logging
 from typing import Any
 
+from core.execution_playbook import PlaybookBuilder
 from core.youzi_personas import evaluate_youzi_personas, extract_tape_features
 from data.eltdx_collector import EltdxCollector
 
 logger = logging.getLogger("ast_trader.screener.rank")
+playbook_builder = PlaybookBuilder()
 
 
 def rank_composite(
@@ -106,17 +108,29 @@ def rank_composite(
         c["action"] = action
         c["action_desc"] = action_desc
 
+        # 构建实盘执行剧本战术卡 (Execution Playbook)
+        act_key = "BUY" if action == "buyable" else ("WAIT" if action in ("wait_pullback", "wait_reseal") else "WAIT")
+        pb = playbook_builder.build(
+            quote=real_quote or {"close": close_val, "pre_close": close_val},
+            momentum={"support_level": round(close_val * 0.95, 2), "resistance_level": round(close_val * 1.05, 2)},
+            matched_personas=[p["youzi_name"] for p in matched_personas],
+            action=act_key,
+            ladder_info=c.get("theme_info") or {"is_leader": leader, "board_level": bl},
+            fatal_flag=False,
+        )
+        c["playbook"] = pb
+
         # 5. 装配进场条件与唯一失效退出线 (完全由游资战法推导)
         if matched_personas:
             top_p = matched_personas[0]
             supporters = "、".join(p["youzi_name"] for p in matched_personas[:3])
             c["supporters"] = supporters
-            c["plan_high_open"] = f"契合【{supporters}】战法: {top_p['entry_condition']}"
-            c["plan_stop_loss"] = f"{top_p['invalidation']} (铁律底线: 跌破今日涨停价或分时 -3% 坚决平仓)"
+            c["plan_high_open"] = f"{pb.entry_tactic} (挂单区间: {pb.entry_price_range})"
+            c["plan_stop_loss"] = pb.invalidation_rule
         else:
             c["supporters"] = "普通游资/散户资金"
-            c["plan_high_open"] = f"{c.get('limit_reason', '主线题材')}板位接力: 高开1%~3%轻仓试错 (回踩支撑低吸)"
-            c["plan_stop_loss"] = "跌破今日涨停价或分时跌破 -3% 坚决止损"
+            c["plan_high_open"] = f"{pb.entry_tactic} (挂单区间: {pb.entry_price_range})"
+            c["plan_stop_loss"] = pb.invalidation_rule
 
         return c
 
