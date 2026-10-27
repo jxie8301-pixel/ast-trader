@@ -11,68 +11,56 @@ console = Console()
 
 
 def print_decision_card(card: dict[str, Any]) -> None:
-    """在终端渲染单股决断卡 (完全融合 Ashare 5 问、UZI 24 战法、实盘执行剧本与流派陪审团)。"""
+    """在终端渲染单股决断卡 (严格基于A股双轨逻辑与五维实盘支柱，杜绝重复与矛盾)."""
     gear = card.get("decision_gear", "观察")
-    gear_color = "red" if gear == "回避" else "green" if gear == "买入" else "yellow"
+    gear_color = "red" if gear == "回避" else ("green" if gear == "买入" else "yellow")
+    gear_style = f"[{gear_color} bold]【{gear}】[/{gear_color} bold]"
 
-    gear_style = f"[{gear_color} bold]{gear}[/{gear_color} bold]"
     ticker = card.get("ticker", "")
     name = card.get("name", "")
     price = card.get("price", 0.0)
     pct = card.get("pct_chg", 0.0)
-    pct_color = "red" if pct > 0 else "green"
+    pct_color = "red" if pct > 0 else ("green" if pct < 0 else "white")
+    board_name = card.get("board_name", "主板 (10%涨跌停)")
+    track_name = card.get("track_name", "常规标的")
 
-    header = (
+    circ_mv = card.get("circ_mv", 0.0) / 1e8
+    total_mv = card.get("total_mv", 0.0) / 1e8
+    turnover = card.get("turnover_ratio", 0.0)
+    pe = card.get("pe", 0.0)
+
+    # 标的基本面与行情抬头
+    header_info = (
         f"[bold white]{name}[/bold white] ([cyan]{ticker}[/cyan])  |  "
-        f"现价: [bold]{price:.2f}[/bold] 元 ([{pct_color}]{pct:+.2f}%[/{pct_color}])  |  "
-        f"行动档位: {gear_style}"
+        f"现价: [bold]{price:.2f}[/bold]元 ([{pct_color}]{pct:+.2f}%[/{pct_color}])  |  "
+        f"换手: [bold]{turnover:.2f}%[/bold]  |  "
+        f"PE(TTM): [bold]{pe:.1f}x[/bold]"
+    )
+    sub_header = (
+        f"板块规制: [bold cyan]{board_name}[/bold cyan]  |  "
+        f"物种定位: [bold yellow]{track_name}[/bold yellow] (流通: {circ_mv:.1f}亿 / 总值: {total_mv:.1f}亿)  |  "
+        f"决断档位: {gear_style}"
     )
 
     body_lines = [
-        f"[bold cyan]⓪ 闸门 (大盘情绪总况):[/bold cyan] {card.get('market_gate_verdict', '未接入大盘连板情绪')}",
-        f"[bold cyan]① 质地 (是不是好公司):[/bold cyan] {card.get('quality_verdict')}",
-        f"[bold cyan]② 状态 (在变好吗):[/bold cyan]     {card.get('state_verdict')}",
-        f"[bold cyan]③ 赔率 (贵不贵):[/bold cyan]       {card.get('odds_verdict')}",
-        f"[bold cyan]④ 路径 (扛得住吗):[/bold cyan]     {card.get('path_verdict')}",
-        f"[bold cyan]⑤ 决策 (怎么办):[/bold cyan]       建议仓位: [bold yellow]{card.get('position_cap', 0.0)*100:.0f}%[/bold yellow] | "
-        f"退出失效线: [bold red]{card.get('invalidation_line')}[/bold red]",
+        header_info,
+        sub_header,
+        "[dim]─" * 70 + "[/dim]",
+        f"[bold cyan]❶ 宏观闸门 / 情绪周期:[/bold cyan]\n  {card.get('pillar_gate', '未接入')}",
+        f"[bold cyan]❷ 业务纯度 / 题材身位:[/bold cyan]\n  {card.get('pillar_business', '未接入')}",
+        f"[bold cyan]❸ 筹码阻力 / 封板生态:[/bold cyan]\n  {card.get('pillar_tape', '未接入')}",
+        f"[bold cyan]❹ 资金动向 / 监管余量:[/bold cyan]\n  {card.get('pillar_flow', '未接入')}",
+        f"[bold cyan]❺ 本土排雷 (二元风控):[/bold cyan]\n  {card.get('pillar_audit', '未接入')}",
+        "[dim]─" * 70 + "[/dim]",
+        f"[bold yellow]🎯 实战决断:[/bold yellow] [bold]{card.get('decision_title', '')}[/bold] (建议仓位: [bold yellow]{card.get('position_cap', 0.0)*100:.0f}%[/bold yellow])",
+        f"[bold yellow]📌 核心矛盾:[/bold yellow] {card.get('core_contradiction', '')}",
+        f"[bold yellow]⚡ 实盘战术:[/bold yellow] {card.get('action_tactic', '')}",
+        f"[bold red]🛑 实战防线 (T+1纪律):[/bold red] {card.get('invalidation_line', '')}",
     ]
 
-    # 1. 展现实盘级执行战术卡 (Execution Playbook)
-    pb = card.get("playbook")
-    if pb:
-        body_lines.append(f"\n[bold yellow]📋 实盘战术执行手册 (Execution Playbook):[/bold yellow]")
-        body_lines.append(f"  • 行动意图: [bold]{getattr(pb, 'action_label', '')}[/bold]")
-        body_lines.append(f"  • 入场战术: {getattr(pb, 'entry_tactic', '')}")
-        body_lines.append(f"  • 参考区间: [bold green]{getattr(pb, 'entry_price_range', '')}[/bold green]")
-        body_lines.append(f"  • 仓位节奏: 基准首仓 [bold]{getattr(pb, 'base_position_pct', 0)}%[/bold] | "
-                          f"确认加仓 [bold]{getattr(pb, 'add_position_pct', 0)}%[/bold] | "
-                          f"单票封顶 [bold red]{getattr(pb, 'max_position_pct', 0)}%[/bold red]")
-        body_lines.append(f"  • 止盈目标: {getattr(pb, 'take_profit_target', '')}")
-        body_lines.append(f"  • 铁律死锁: [bold red]{getattr(pb, 'invalidation_rule', '')}[/bold red]")
-
-    # 2. 展现四维资金博弈雷达 (Capital Force Matrix)
-    matrix = card.get("capital_matrix")
-    if matrix:
-        body_lines.append(f"\n[bold magenta]📊 四维资金博弈雷达 (Capital Force Matrix):[/bold magenta]")
-        body_lines.append(f"  • 资金综合裁决: [bold]{matrix.matrix_verdict}[/bold] (合力评分: [bold cyan]{matrix.synergy_score:.1f}分[/bold cyan])")
-        body_lines.append(f"  • 主导资金力量: [bold yellow]{matrix.dominant_force}[/bold yellow]")
-        body_lines.append(f"  • [bold green]▲ 多头进攻逻辑:[/bold green] {matrix.bull_catalyst}")
-        body_lines.append(f"  • [bold red]▼ 空头防守风险:[/bold red] {matrix.bear_risk}")
-        body_lines.append("  • 主力维度客观透视:")
-        for d in matrix.dimensions:
-            s_style = "[bold green]BULL[/bold green]" if d.status == "BULL" else ("[bold red]VETO[/bold red]" if d.status == "VETO" else ("[yellow]NEUTRAL[/yellow]" if d.status == "NEUTRAL" else "[red]BEAR[/red]"))
-            body_lines.append(f"    - {d.dimension_name}: {s_style} ({d.score:.0f}分) -> {d.summary}")
-
-    top3 = card.get("top3_risks", [])
-    if top3:
-        body_lines.append("\n[bold red]─── Top 3 核心致命排雷风险 ───[/bold red]")
-        for i, r in enumerate(top3, 1):
-            body_lines.append(f"  {r['level']} [{i}] {r['title']}: {r['evidence']}")
-
     panel = Panel(
-        "\n".join(body_lines),
-        title=f"🎯 [bold yellow]AST-Trader 短线作战决断卡[/bold yellow] - {header}",
+        "\n\n".join([body_lines[0], body_lines[1]]) + "\n" + "\n\n".join(body_lines[2:]),
+        title=f"🎯 [bold yellow]AST-Trader A股买方投研决断卡[/bold yellow]",
         border_style=gear_color,
     )
     console.print(panel)
