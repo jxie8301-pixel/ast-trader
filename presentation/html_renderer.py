@@ -1,0 +1,351 @@
+"""HTML report renderer for AST-Trader single stock analysis."""
+from __future__ import annotations
+
+import html
+import os
+from datetime import datetime
+from typing import Any
+
+
+def render_decision_card_html(card: dict[str, Any], output_path: str | None = None) -> str:
+    """将决断卡和完整量化投研数据渲染为独立的离线 HTML 研报。"""
+    ticker = card.get("ticker", "未知")
+    name = card.get("name", ticker)
+    price = card.get("price", 0.0)
+    pct_chg = card.get("pct_chg", 0.0)
+    gear = card.get("decision_gear", "回避")
+    cap = card.get("position_cap", 0.0)
+    invalidation = card.get("invalidation_line", "无")
+    top3 = card.get("top3_risks", [])
+    all_flags = card.get("all_flags", top3)
+    youzi = card.get("matched_youzi", [])
+    trap_warnings = card.get("trap_warnings", [])
+    date_str = card.get("trade_date", datetime.now().strftime("%Y%m%d"))
+
+    # 档位颜色与标识
+    if gear == "买入":
+        gear_badge_class = "badge-buy"
+        gear_label = "🟢 进攻 / 买入"
+    elif gear == "观察":
+        gear_badge_class = "badge-watch"
+        gear_label = "🟡 观察 / 试仓"
+    else:
+        gear_badge_class = "badge-avoid"
+        gear_label = "🔴 回避 / 空仓"
+
+    pct_color = "#e53e3e" if pct_chg > 0 else ("#38a169" if pct_chg < 0 else "#718096")
+    pct_sign = "+" if pct_chg > 0 else ""
+
+    # 红旗列表渲染
+    risk_rows = ""
+    for idx, r in enumerate(all_flags, 1):
+        lvl = r.get("level", "🟡")
+        badge_cls = "badge-fatal" if lvl == "🔴" else ("badge-warn" if lvl == "🟠" else "badge-info")
+        risk_rows += f"""
+        <tr>
+            <td style="text-align:center;"><span class="badge {badge_cls}">{lvl} {html.escape(str(r.get('framework', '')))}</span></td>
+            <td><strong>{html.escape(str(r.get('title', '')))}</strong></td>
+            <td>{html.escape(str(r.get('evidence', '')))}</td>
+            <td style="color:#718096; font-size:12px;">{html.escape(str(r.get('threshold', '')))}</td>
+        </tr>
+        """
+    if not risk_rows:
+        risk_rows = '<tr><td colspan="4" style="text-align:center; color:#38a169; padding:20px;">✓ 审计与治理指标全面通过，未触发任何严重排雷红旗</td></tr>'
+
+    # 游资席位渲染
+    youzi_rows = ""
+    for y in youzi:
+        styles = ", ".join(y.get("styles", []))
+        level = y.get("level", "主力")
+        tag_color = "#9b2c2c" if level == "一线顶级游资" else "#2b6cb0"
+        youzi_rows += f"""
+        <div class="youzi-card">
+            <div class="youzi-header">
+                <span class="youzi-name">{html.escape(y.get('youzi_name', ''))}</span>
+                <span class="youzi-tier" style="background:{tag_color}">{level}</span>
+            </div>
+            <div class="youzi-body">
+                <div><strong>席位:</strong> {html.escape(y.get('branch_name', ''))}</div>
+                <div><strong>操盘风格:</strong> {html.escape(styles)}</div>
+            </div>
+        </div>
+        """
+    if not youzi_rows:
+        youzi_rows = '<div style="color:#718096; padding: 15px;">近期未见知名一线游资或机构上榜，属于普通游资或散户资金盘</div>'
+
+    html_content = f"""<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AST-Trader 短线作战报告 - {html.escape(name)} ({html.escape(ticker)})</title>
+    <style>
+        :root {{
+            --bg-primary: #0f172a;
+            --bg-card: #1e293b;
+            --bg-item: #334155;
+            --text-primary: #f8fafc;
+            --text-secondary: #94a3b8;
+            --border: #475569;
+            --danger: #ef4444;
+            --warning: #f59e0b;
+            --success: #10b981;
+            --accent: #3b82f6;
+        }}
+        * {{ box-sizing: border-box; margin: 0; padding: 0; }}
+        body {{
+            background-color: var(--bg-primary);
+            color: var(--text-primary);
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", "Microsoft YaHei", sans-serif;
+            line-height: 1.6;
+            padding: 24px;
+        }}
+        .container {{
+            max-width: 1080px;
+            margin: 0 auto;
+        }}
+        .header {{
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            background: var(--bg-card);
+            padding: 24px 32px;
+            border-radius: 12px;
+            border: 1px solid var(--border);
+            margin-bottom: 24px;
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.3);
+        }}
+        .header-title {{
+            display: flex;
+            align-items: baseline;
+            gap: 16px;
+        }}
+        .header-title h1 {{
+            font-size: 28px;
+            font-weight: 700;
+        }}
+        .ticker-code {{
+            font-size: 16px;
+            color: var(--text-secondary);
+            font-family: monospace;
+        }}
+        .price-badge {{
+            font-size: 24px;
+            font-weight: 700;
+        }}
+        .badge {{
+            display: inline-block;
+            padding: 6px 14px;
+            border-radius: 6px;
+            font-size: 14px;
+            font-weight: 600;
+            text-align: center;
+        }}
+        .badge-buy {{ background: rgba(16, 185, 129, 0.2); color: #34d399; border: 1px solid #059669; }}
+        .badge-watch {{ background: rgba(245, 158, 11, 0.2); color: #fbbf24; border: 1px solid #d97706; }}
+        .badge-avoid {{ background: rgba(239, 68, 68, 0.2); color: #f87171; border: 1px solid #dc2626; }}
+        .badge-fatal {{ background: #dc2626; color: #fff; }}
+        .badge-warn {{ background: #d97706; color: #fff; }}
+        .badge-info {{ background: #475569; color: #cbd5e1; }}
+        
+        .section-grid {{
+            display: grid;
+            grid-template-columns: 1fr;
+            gap: 20px;
+            margin-bottom: 24px;
+        }}
+        .card {{
+            background: var(--bg-card);
+            border-radius: 12px;
+            border: 1px solid var(--border);
+            padding: 24px;
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.2);
+        }}
+        .card h2 {{
+            font-size: 18px;
+            margin-bottom: 16px;
+            padding-bottom: 8px;
+            border-bottom: 1px solid var(--border);
+            color: var(--text-primary);
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }}
+        .decision-chain-node {{
+            display: flex;
+            align-items: flex-start;
+            margin-bottom: 14px;
+            padding: 12px 16px;
+            background: var(--bg-item);
+            border-radius: 8px;
+        }}
+        .node-tag {{
+            font-weight: 700;
+            font-size: 14px;
+            min-width: 140px;
+            color: #60a5fa;
+        }}
+        .node-content {{
+            font-size: 14px;
+            color: #e2e8f0;
+            flex-grow: 1;
+        }}
+        .decision-highlight {{
+            background: rgba(59, 130, 246, 0.15);
+            border: 1px solid #3b82f6;
+            border-radius: 8px;
+            padding: 16px;
+            margin-top: 16px;
+        }}
+        .table {{
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 14px;
+        }}
+        .table th, .table td {{
+            padding: 12px 16px;
+            text-align: left;
+            border-bottom: 1px solid var(--border);
+        }}
+        .table th {{
+            background: var(--bg-item);
+            color: var(--text-secondary);
+            font-weight: 600;
+        }}
+        .youzi-grid {{
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+            gap: 16px;
+        }}
+        .youzi-card {{
+            background: var(--bg-item);
+            border-radius: 8px;
+            padding: 16px;
+            border: 1px solid var(--border);
+        }}
+        .youzi-header {{
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 8px;
+        }}
+        .youzi-name {{
+            font-weight: 700;
+            font-size: 16px;
+            color: #38bdf8;
+        }}
+        .youzi-tier {{
+            font-size: 11px;
+            padding: 2px 8px;
+            border-radius: 4px;
+            color: #fff;
+        }}
+        .youzi-body {{
+            font-size: 13px;
+            color: var(--text-secondary);
+            line-height: 1.5;
+        }}
+        .footer {{
+            text-align: center;
+            font-size: 13px;
+            color: var(--text-secondary);
+            margin-top: 32px;
+            padding-top: 16px;
+            border-top: 1px solid var(--border);
+        }}
+    </style>
+</head>
+<body>
+    <div class="container">
+        <!-- 头部概览 -->
+        <header class="header">
+            <div class="header-title">
+                <h1>{html.escape(name)}</h1>
+                <span class="ticker-code">{html.escape(ticker)}</span>
+                <span class="price-badge" style="color: {pct_color}">{price:.2f} 元 ({pct_sign}{pct_chg:.2f}%)</span>
+            </div>
+            <div>
+                <span class="badge {gear_badge_class}">{gear_label}</span>
+            </div>
+        </header>
+
+        <!-- 决策链核心卡片 -->
+        <section class="section-grid">
+            <div class="card">
+                <h2>🎯 AST-Trader 五节点因果决断卡</h2>
+                
+                <div class="decision-chain-node">
+                    <span class="node-tag">① 质地 (成色与造假):</span>
+                    <span class="node-content">{html.escape(card.get('quality_verdict', ''))}</span>
+                </div>
+                <div class="decision-chain-node">
+                    <span class="node-tag">② 状态 (动能与催化):</span>
+                    <span class="node-content">{html.escape(card.get('state_verdict', ''))}</span>
+                </div>
+                <div class="decision-chain-node">
+                    <span class="node-tag">③ 赔率 (溢价与估值底):</span>
+                    <span class="node-content">{html.escape(card.get('odds_verdict', ''))}</span>
+                </div>
+                <div class="decision-chain-node">
+                    <span class="node-tag">④ 路径 (左尾与席位):</span>
+                    <span class="node-content">{html.escape(card.get('path_verdict', ''))}</span>
+                </div>
+                
+                <div class="decision-highlight">
+                    <div style="font-size: 16px; font-weight: 700; color: #f8fafc; margin-bottom: 8px;">
+                        ⑤ 决策执行 (单票风控红线)
+                    </div>
+                    <div style="font-size: 14px; margin-bottom: 6px;">
+                        <strong>建议仓位上限:</strong> <span style="color:#38bdf8; font-weight:bold;">{int(cap * 100)}%</span>
+                    </div>
+                    <div style="font-size: 14px;">
+                        <strong>绝对退出 / 逻辑证伪线:</strong> <span style="color:#f87171; font-weight:bold;">{html.escape(invalidation)}</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 买方深度审计与排雷 -->
+            <div class="card">
+                <h2>🔍 买方会计审计与致命排雷雷达</h2>
+                <table class="table">
+                    <thead>
+                        <tr>
+                            <th style="width:180px; text-align:center;">框架/等级</th>
+                            <th style="width:240px;">核心风险点</th>
+                            <th>买方取证与逻辑细节</th>
+                            <th style="width:140px;">触发阈值</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {risk_rows}
+                    </tbody>
+                </table>
+            </div>
+
+            <!-- 游资席位与杀猪盘预警 -->
+            <div class="card">
+                <h2>⚔️ 游资席位协同与资金博弈画像</h2>
+                <div class="youzi-grid">
+                    {youzi_rows}
+                </div>
+            </div>
+        </section>
+
+        <footer class="footer">
+            AST-Trader 短线量化决策系统 · 基于 eltdx 极速行情与买方深度审计引擎 · 生成日期: {date_str}
+        </footer>
+    </div>
+</body>
+</html>
+"""
+
+    if not output_path or output_path == "default":
+        reports_dir = os.path.join(os.getcwd(), "reports")
+        os.makedirs(reports_dir, exist_ok=True)
+        clean_ticker = ticker.replace(".", "_")
+        output_path = os.path.join(reports_dir, f"{clean_ticker}_{date_str}.html")
+
+    with open(output_path, "w", encoding="utf-8") as f:
+        f.write(html_content)
+
+    return output_path
