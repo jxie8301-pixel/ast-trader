@@ -451,3 +451,39 @@ class EltdxCollector:
             res["holder_date"] = hf.get("end_date")
 
         return res
+
+    def get_market_breadth(self) -> dict[str, Any]:
+        """获取全市场广度统计（涨跌家数比、全市场总成交额、涨跌停数）。"""
+        def _fetch():
+            with open_client() as c:
+                quotes = c.quotes.legacy(["sh880005", "sh880001", "sh880006"])
+                if not quotes:
+                    return {}
+                q = quotes[0]
+                up = round(q.last_price)
+                down = round(q.open_price)
+                neutral = round(q.low_price)
+                total = round(q.high_price)
+                if total > 15000:
+                    up = round(up / 10)
+                    down = round(down / 10)
+                    neutral = round(neutral / 10)
+                    total = round(total / 10)
+                limit_down = round(quotes[2].open_price) if len(quotes) > 2 else 0
+                limit_up = round(quotes[2].last_price) if len(quotes) > 2 else 0
+                if limit_up > 500:
+                    limit_up = round(limit_up / 10)
+                if limit_down > 500:
+                    limit_down = round(limit_down / 10)
+                return {
+                    "up_count": up,
+                    "down_count": down,
+                    "neutral_count": neutral,
+                    "total_count": total,
+                    "total_amount": float(q.amount) if q.amount else 0.0,
+                    "limit_up_count": limit_up,
+                    "limit_down_count": limit_down,
+                }
+        resp = with_retry(_fetch, what="quotes.legacy_market_stat")
+        return resp or {}
+

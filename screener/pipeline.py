@@ -20,7 +20,7 @@ class ScreenerPipeline:
 
     def __init__(self) -> None:
         self.collector = EltdxCollector()
-        self.ladder_analyzer = LadderAnalyzer()
+        self.ladder_analyzer = LadderAnalyzer(collector=self.collector)
 
     def run_screener(self, mode: str = "close", top_n: int = 10) -> dict[str, Any]:
         """执行全市场短线漏斗筛选。

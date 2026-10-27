@@ -83,20 +83,40 @@ def print_screener_table(result_obj: Any, mode: str = "close") -> None:
     elif isinstance(result_obj, list):
         candidates = result_obj
 
-    # 1. 打印全市场涨停天梯与情绪周期面板
+    # 1. 打印全市场涨停天梯与宏观大盘情绪全景
     if overview:
+        macro_res = getattr(overview, "macro_regime_result", None)
         ladder_desc = " | ".join(f"{k}板: {v}家" for k, v in sorted(overview.ladder_counts.items(), reverse=True))
         promo_desc = " | ".join(f"{k}板晋级率: {v*100:.1f}%" for k, v in sorted(overview.promotion_rates.items(), reverse=True))
         themes_desc = "；".join(f"{t.name}({t.count}家, 龙一:{t.leader_name} {t.leader_board}板)" for t in overview.strongest_themes[:3])
         space_tickers = "、".join(overview.space_board_tickers) if overview.space_board_tickers else "无"
 
-        ladder_lines = [
-            f"[bold]交易日期:[/bold] {overview.trade_date}  |  [bold]市场情绪水温:[/bold] [bold red]{overview.sentiment_phase}[/bold red]  |  [bold]涨停:[/bold] [bold red]{overview.total_limit_up_count}[/bold red]家 / [bold]跌停:[/bold] [bold green]{overview.total_limit_down_count}[/bold green]家 / [bold]炸板:[/bold] [bold yellow]{overview.total_broken_count}[/bold yellow]家 (炸板率 {overview.broken_rate_pct:.1f}%)",
-            f"[bold]连板天梯分布:[/bold] {ladder_desc}",
-            f"[bold]核心梯队晋级率:[/bold] {promo_desc if promo_desc else '首板为主'}",
-            f"[bold]空间高度龙头:[/bold] [bold yellow]{overview.space_board_level} 板[/bold yellow] -> {space_tickers}",
-            f"[bold]最强核心主线题材:[/bold] {themes_desc}",
-        ]
+        if macro_res is not None:
+            idx_m = macro_res.index_metrics
+            brd_m = macro_res.breadth_metrics
+            vol_m = macro_res.volume_metrics
+            spc_m = macro_res.speculative_metrics
+            tot_amt_trillion = vol_m.total_amount / 1e12
+
+            ladder_lines = [
+                f"[bold]交易日期:[/bold] {overview.trade_date}  |  [bold]大盘宏观状态:[/bold] [bold red]{macro_res.macro_regime_label}[/bold red] (综合评分: [bold yellow]{macro_res.composite_score:.0f}/100[/bold yellow])",
+                f"[bold]大盘基准趋势:[/bold] {idx_m.name}({idx_m.code}) 收盘 {idx_m.close:.2f} ({idx_m.pct_chg:+.2f}%)，均线【{idx_m.ma_alignment}】，连跌 {idx_m.consecutive_down_days} 日，5日动量 {idx_m.ret_5d:+.2f}%",
+                f"[bold]全市场广度量能:[/bold] 【{brd_m.breadth_regime}】 上涨 {brd_m.up_count}家 / 下跌 {brd_m.down_count}家 (涨跌比 {brd_m.breadth_ratio*100:.1f}%) | 总成交 {tot_amt_trillion:.2f}万亿 ({vol_m.volume_regime})",
+                f"[bold]短线连板投机:[/bold] 【{spc_m.speculative_regime}】 空间板 [bold yellow]{spc_m.space_board_level}板[/bold yellow] [{space_tickers}] | 涨停 {spc_m.limit_up_count}家 / 跌停 {spc_m.limit_down_count}家 (炸板率 {spc_m.broken_rate_pct:.1f}%)",
+                f"[bold]连板天梯分布:[/bold] {ladder_desc}",
+                f"[bold]最强核心主线题材:[/bold] {themes_desc}",
+            ]
+            if macro_res.risk_warnings:
+                for w in macro_res.risk_warnings:
+                    ladder_lines.append(f"[bold red]⚠️ 核心宏观警示:[/bold red] {w}")
+        else:
+            ladder_lines = [
+                f"[bold]交易日期:[/bold] {overview.trade_date}  |  [bold]市场情绪水温:[/bold] [bold red]{overview.sentiment_phase}[/bold red]  |  [bold]涨停:[/bold] [bold red]{overview.total_limit_up_count}[/bold red]家 / [bold]跌停:[/bold] [bold green]{overview.total_limit_down_count}[/bold green]家 / [bold]炸板:[/bold] [bold yellow]{overview.total_broken_count}[/bold yellow]家 (炸板率 {overview.broken_rate_pct:.1f}%)",
+                f"[bold]连板天梯分布:[/bold] {ladder_desc}",
+                f"[bold]核心梯队晋级率:[/bold] {promo_desc if promo_desc else '首板为主'}",
+                f"[bold]空间高度龙头:[/bold] [bold yellow]{overview.space_board_level} 板[/bold yellow] -> {space_tickers}",
+                f"[bold]最强核心主线题材:[/bold] {themes_desc}",
+            ]
         ladder_panel = Panel(
             "\n".join(ladder_lines),
             title="⚡ [bold yellow]全市场涨停连板天梯与短线情绪周期全景 (UZI Ladders)[/bold yellow]",

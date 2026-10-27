@@ -79,7 +79,7 @@ def run_analyze(ticker_input: str, html_output: str | None = None) -> None:
     )
 
     # 3. 大盘连板天梯与市场情绪周期 (Layer 0 市场情绪总闸门)
-    ladder_analyzer = LadderAnalyzer()
+    ladder_analyzer = LadderAnalyzer(collector=collector)
     sentiment_overview, stock_theme_map, _ = ladder_analyzer.analyze()
     ladder_info = stock_theme_map.get(num_code)
 

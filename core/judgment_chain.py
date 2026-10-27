@@ -89,10 +89,14 @@ class JudgmentChainRunner:
         high_flags = [f for f in flags if f.level == "🟠"]
         is_fatal = len(fatal_flags) > 0
 
-        # ─── 支柱 ❶ 宏观闸门 / 情绪周期 ───
+        # ─── 支柱 ❶ 宏观闸门 / 情绪周期 (多维大盘与情绪交叉验证) ───
         is_market_ice = False
         p_gate = "未接入大盘连板情绪"
-        if sentiment_overview is not None:
+        macro_res = getattr(sentiment_overview, "macro_regime_result", None) if sentiment_overview else None
+        if macro_res is not None:
+            is_market_ice = not macro_res.is_gate_open
+            p_gate = macro_res.gate_description
+        elif sentiment_overview is not None:
             phase = getattr(sentiment_overview, "sentiment_phase", "未知")
             space = getattr(sentiment_overview, "space_board_level", 0)
             tickers = "、".join(getattr(sentiment_overview, "space_board_tickers", [])[:2]) or "无"
@@ -220,9 +224,17 @@ class JudgmentChainRunner:
             decision_gear = "观察"
             decision_title = "【👀 情绪防守】"
             position_cap = 0.0
-            core_contra = "大盘处于短线冰点或强退潮期，空间板受压制且涨停家数锐减，接力亏钱效应扩散，短线胜率极低。"
-            action_tactic = "【空仓防守】管住手不伸手接飞刀，耐心等待大盘出现放量共振冰点转折信号后再行开仓。"
-            invalidation = "大盘退潮期禁止开新仓，严禁逆势接力！"
+            if macro_res and macro_res.resonance_type == "DIVERGENCE_SPECULATIVE_CLING":
+                core_contra = (
+                    f"市场处于{macro_res.macro_regime_label}：大盘连续破位阴跌，全市场广度处于【{macro_res.breadth_metrics.breadth_regime}】(下跌 {macro_res.breadth_metrics.down_count} 家)。"
+                    f"个别连板股属于极端存量流动性避险抱团，极易受大盘拖累遭遇断板天地踩踏补跌。买方纪律严禁在弱市逆势接力！"
+                )
+                action_tactic = "【空仓防御】不被个别妖股连板诱惑，耐心等待大盘指数企稳止跌与增量资金放量共振后再行开仓。"
+                invalidation = "大盘破位阴跌期禁止逆势接力，坚决不参与妖股末日轮博傻！"
+            else:
+                core_contra = "大盘处于弱势阴跌或强退潮期，广度与连板受压制，短线亏钱效应扩散，胜率极低。"
+                action_tactic = "【空仓防守】管住手不伸手接飞刀，耐心等待大盘出现放量共振冰点转折信号后再行开仓。"
+                invalidation = "大盘退潮期禁止开新仓，严禁逆势接力！"
         elif mf_stage_code == "STAGE_5_EXHAUSTION_ACCELERATION":
             # ─────────────────────────────────────────────────────────
             # 生产级安全死锁：高标缩量加速赶顶期，持币者严禁追高！买入仓位锁定为 0.0%！

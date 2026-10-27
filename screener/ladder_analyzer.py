@@ -42,15 +42,19 @@ class MarketSentimentOverview:
     ladder_counts: dict[int, int]
     promotion_rates: dict[int, float]
     total_limit_up_count: int
-    sentiment_phase: str  # 启动, 发酵, 高潮, 分歧, 修复, 退潮
+    sentiment_phase: str  # 综合状态标签
     strongest_themes: list[ThemeAggregate]
     total_limit_down_count: int = 0
     total_broken_count: int = 0
     broken_rate_pct: float = 0.0
+    macro_regime_result: Any | None = None
 
 
 class LadderAnalyzer:
     """提取通达信当日全市场涨停天梯、计算晋级率、识别题材主线与龙头结构。"""
+
+    def __init__(self, collector: Any | None = None) -> None:
+        self.collector = collector
 
     def analyze(self) -> tuple[MarketSentimentOverview, dict[str, dict[str, Any]], list[dict[str, Any]]]:
         """执行天梯分析。
@@ -74,6 +78,7 @@ class LadderAnalyzer:
                     total_limit_down_count=0,
                     total_broken_count=0,
                     broken_rate_pct=0.0,
+                    macro_regime_result=None,
                 ), {}, []
 
         raw_rows = []
@@ -172,12 +177,12 @@ class LadderAnalyzer:
         # 题材按涨停家数、总封单资金排序
         theme_aggs.sort(key=lambda t: (-t.count, -t.total_seal_amount))
 
-        # 综合情绪水温研判 (融入跌停与炸板率压制)
+        # 综合情绪水温研判 (先设启发式基线)
         if total_dt >= 15 or (total_dt >= 10 and broken_rate_pct >= 35.0):
             if space_board_level >= 4:
-                phase = "高位分歧期"  # 妖股锁仓博傻，后排大面积跌停踩踏
+                phase = "高位分歧期"
             else:
-                phase = "退潮分歧期"  # 情绪全线退潮
+                phase = "退潮分歧期"
         elif total_zt <= 25 or (space_board_level <= 2 and total_dt >= 8):
             phase = "混沌冰点期"
         elif space_board_level >= 5 and total_zt >= 40 and total_dt <= 8 and broken_rate_pct < 30.0:
@@ -186,6 +191,35 @@ class LadderAnalyzer:
             phase = "中位加速期"
         else:
             phase = "震荡轮动期"
+
+        # ─── 接入多维宏观大盘与全市场情绪量化引擎 (解耦大盘与个股) ───
+        macro_result = None
+        try:
+            from core.macro_regime import MacroRegimeEngine
+            from data.eltdx_collector import EltdxCollector
+            coll = self.collector or EltdxCollector()
+            daily_idx = coll.get_daily("sh000001", count=30)
+            stat_dict = coll.get_market_breadth()
+
+            engine = MacroRegimeEngine()
+            temp_ov = type("TempOverview", (), {
+                "space_board_level": space_board_level,
+                "space_board_tickers": space_board_tickers,
+                "total_limit_up_count": total_zt,
+                "total_limit_down_count": total_dt,
+                "total_broken_count": total_broken,
+                "broken_rate_pct": broken_rate_pct,
+            })()
+            macro_result = engine.evaluate(
+                trade_date=lad.trade_date or "",
+                index_daily_df=daily_idx,
+                market_stat_dict=stat_dict,
+                ladder_overview=temp_ov,
+            )
+            if macro_result:
+                phase = macro_result.macro_regime_label
+        except Exception as e:
+            pass
 
         overview = MarketSentimentOverview(
             trade_date=lad.trade_date or "",
@@ -199,6 +233,7 @@ class LadderAnalyzer:
             total_limit_down_count=total_dt,
             total_broken_count=total_broken,
             broken_rate_pct=broken_rate_pct,
+            macro_regime_result=macro_result,
         )
 
         # 构建个股题材上下文映射 (code -> context)
