@@ -10,10 +10,30 @@ from typing import Any
 
 from eltdx import TdxClient
 from eltdx.exceptions import TransportError
+from eltdx.financial import open_calc_client
 
 import config
 
 logger = logging.getLogger("ast_trader.data.client")
+
+
+class EltdxFetchError(Exception):
+    """网络或底层数据获取异常。"""
+
+
+class EltdxFormatError(Exception):
+    """格式解析异常。"""
+
+
+def log_fail(what: str, exc: Exception) -> None:
+    logger.warning(f"[eltdx][FAIL] {what}: {exc}")
+
+
+@contextmanager
+def open_calc(timeout: float = 8.0):
+    """打开计算服务器连接 (用于下载专业财务 zip)。"""
+    with open_calc_client(timeout=timeout) as client:
+        yield client
 
 
 def normalize_code(code: str) -> tuple[str, str]:

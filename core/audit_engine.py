@@ -20,6 +20,22 @@ def _safe_float(v: Any, default: float | None = None) -> float | None:
         return default
 
 
+def _annual(df: pd.DataFrame) -> pd.DataFrame:
+    """过滤年报行 (以 1231 结尾的报告期)，按年份升序排序 (完全对齐 Ashare financial_audit.py:90)"""
+    if df is None or df.empty:
+        return pd.DataFrame()
+    if "end_date" not in df.columns:
+        return df.copy()
+    mask = df["end_date"].astype(str).str.endswith("1231")
+    ann = df.loc[mask].copy()
+    if ann.empty or len(ann) < 2:
+        # 若年报不足2期，回退至季度切片，保证短线连续性
+        return df.sort_values("end_date").drop_duplicates("end_date").reset_index(drop=True)
+    ann["_year"] = ann["end_date"].astype(str).str[:4].astype(int)
+    ann = ann.sort_values("_year").drop_duplicates("_year", keep="last").reset_index(drop=True)
+    return ann
+
+
 class AuditEngine:
     """11 大财务审计与扫雷引擎。输入三张报表与行情快照，输出标准红旗清单。"""
 
@@ -37,25 +53,30 @@ class AuditEngine:
         """运行全部 11 个审计框架，返回红旗清单。"""
         flags: list[RedFlagItem] = []
 
+        # 过滤年报跨期数据 (与 Ashare 完全对齐)
+        ann_bs = _annual(balance_df)
+        ann_inc = _annual(income_df)
+        ann_cf = _annual(cashflow_df)
+
         # 1. Beneish M-Score (盈余操纵排查)
-        flags.extend(self._check_beneish(balance_df, income_df, cashflow_df))
+        flags.extend(self._check_beneish(ann_bs, ann_inc, ann_cf))
 
         # 2. Piotroski F-Score (财务健康打分)
-        flags.extend(self._check_piotroski(balance_df, income_df, cashflow_df))
+        flags.extend(self._check_piotroski(ann_bs, ann_inc, ann_cf))
 
         # 3. Altman Z-Score (破产预警)
-        flags.extend(self._check_altman(balance_df, income_df))
+        flags.extend(self._check_altman(ann_bs, ann_inc, quote_info))
 
         # 4. Sloan Accrual Anomaly (高应计异象)
-        flags.extend(self._check_sloan(balance_df, income_df, cashflow_df))
+        flags.extend(self._check_sloan(ann_bs, ann_inc, ann_cf))
 
         # 5. DuPont ROE 归因与恶化预警
-        flags.extend(self._check_dupont(balance_df, income_df))
+        flags.extend(self._check_dupont(ann_bs, ann_inc))
 
         # 6. Buffett Quality (现金流含金量、剪刀差与非经占比)
-        flags.extend(self._check_buffett_quality(balance_df, income_df, cashflow_df))
+        flags.extend(self._check_buffett_quality(ann_bs, ann_inc, ann_cf))
 
-        # 7. 主营业务侵蚀 (投资收益占营业利润过高)
+        # 7. 主营业务侵蚀 (投资收益占营业利润过高 - 含最新单季)
         flags.extend(self._check_invest_income_erosion(income_df))
 
         # 8. 治理风险 (高比例质押、大额减持)
@@ -63,14 +84,14 @@ class AuditEngine:
             flags.extend(self._check_governance(governance_info))
 
         # 9. 长期股权投资与关联方敞口
-        flags.extend(self._check_lt_equity_exposure(balance_df))
+        flags.extend(self._check_lt_equity_exposure(ann_bs))
 
         # 10. 估值透支警报
         if quote_info:
-            flags.extend(self._check_valuation(balance_df, income_df, quote_info))
+            flags.extend(self._check_valuation(ann_bs, ann_inc, quote_info))
 
         # 11. 商誉与资产减值黑天鹅排查
-        flags.extend(self._check_goodwill_impairment(balance_df))
+        flags.extend(self._check_goodwill_impairment(ann_bs))
 
         # 12. 股东户数变动与筹码散户化
         if governance_info:
@@ -128,7 +149,7 @@ class AuditEngine:
         cfo_t = (_safe_float(cf.iloc[-1].get("n_cashflow_act")) or 0) if len(cf) > 0 else 0
         tata = (ni_t - cfo_t) / ta_t
 
-        # Beneish M-Score 公式
+        # Beneish M-Score 公式 (完全对齐 Ashare financial_audit.py:277)
         m_score = (
             -4.84
             + 0.920 * dsri
@@ -137,8 +158,8 @@ class AuditEngine:
             + 0.892 * sgi
             + 0.115 * depi
             - 0.172 * sgai
-            + 4.037 * tata
-            + 0.0327 * lvgi
+            + 4.679 * tata
+            - 0.327 * lvgi
         )
 
         if m_score > config.BENEISH_M_FATAL_SCORE:
@@ -226,9 +247,9 @@ class AuditEngine:
         return flags
 
     # ─────────────────────────────────────────────────────────────
-    # 3. Altman Z-Score (破产预警)
+    # 3. Altman Z-Score (破产预警 - 完全对齐 Ashare financial_audit.py:335)
     # ─────────────────────────────────────────────────────────────
-    def _check_altman(self, bs: pd.DataFrame, inc: pd.DataFrame) -> list[RedFlagItem]:
+    def _check_altman(self, bs: pd.DataFrame, inc: pd.DataFrame, quote_info: dict[str, Any] | None = None) -> list[RedFlagItem]:
         flags = []
         if bs.empty or inc.empty:
             return flags
@@ -237,45 +258,54 @@ class AuditEngine:
         i = inc.iloc[-1]
         ta = _safe_float(b.get("total_assets"))
         tl = _safe_float(b.get("total_liab"))
-        if not ta or ta <= 0:
+        if not ta or ta <= 0 or not tl or tl <= 0:
             return flags
 
-        ca = _safe_float(b.get("total_cur_assets"), 0)
-        cl = _safe_float(b.get("total_cur_liab"), 0)
-        working_cap = ca - cl
-        re_earned = _safe_float(b.get("undistr_profit"), 0)
+        tca = _safe_float(b.get("total_cur_assets"), 0)
+        tcl = _safe_float(b.get("total_cur_liab"), 0)
+        re = _safe_float(b.get("undistr_profit"), 0)
         ebit = _safe_float(i.get("operate_profit"), 0)
-        eq = _safe_float(b.get("total_equity"), 0)
-        sales = _safe_float(i.get("revenue"), 0)
+        rev = _safe_float(i.get("revenue"), 0)
 
-        # 针对新兴市场与非制造业通用的 Altman Z''-Score
-        # Z = 6.56*X1 + 3.26*X2 + 6.72*X3 + 1.05*X4
-        x1 = working_cap / ta
-        x2 = re_earned / ta
-        x3 = ebit / ta
-        x4 = eq / max(tl or 1.0, 1.0)
-        z = 6.56 * x1 + 3.26 * x2 + 6.72 * x3 + 1.05 * x4
+        # 股权市值 (MV)
+        mv = 0.0
+        if quote_info:
+            price = _safe_float(quote_info.get("close"), 0.0)
+            shares = _safe_float(b.get("total_share"), 0.0)
+            mv = (price * shares) if price and shares else (_safe_float(b.get("total_equity"), 0.0) or 1.0)
+        else:
+            mv = _safe_float(b.get("total_equity"), 0.0) or 1.0
 
-        if z < 1.1:
+        # Altman Z-Score 经典公式:
+        # Z = 1.2*(TCA-TCL)/TA + 1.4*RE/TA + 3.3*EBIT/TA + 0.6*MV/TL + 1.0*REV/TA
+        z = (
+            1.2 * (tca - tcl) / ta
+            + 1.4 * re / ta
+            + 3.3 * ebit / ta
+            + 0.6 * mv / tl
+            + 1.0 * rev / ta
+        )
+
+        if z < 1.81:
             flags.append(RedFlagItem(
                 id=make_flag_id("Altman", "z_score_distress"),
                 framework="Altman Z-Score",
                 level=LEVEL_FATAL,
                 title="破产高危区域 (Altman Z-Score 极低)",
-                value=round(z, 2),
-                threshold="< 1.1",
-                evidence=f"Z-Score={z:.2f} 处于重度财务危机困境区 (营运资金占比={x1*100:.1f}%, 权益负债比={x4:.2f})",
+                value=round(z, 3),
+                threshold="Z < 1.81 破产风险",
+                evidence=f"Z-Score={z:.3f} 处于破产危机困境区 (营运资本/TA={(tca-tcl)/ta:.3f}, RE/TA={re/ta:.3f}, EBIT/TA={ebit/ta:.3f}, MV/TL={mv/tl:.3f})",
                 node="path",
             ))
-        elif z < 2.6:
+        elif z < 2.99:
             flags.append(RedFlagItem(
                 id=make_flag_id("Altman", "z_score_grey"),
                 framework="Altman Z-Score",
-                level=LEVEL_MEDIUM,
+                level=LEVEL_HIGH,
                 title="财务状况脆弱 (Altman Z-Score 处于灰色预警区)",
-                value=round(z, 2),
-                threshold="< 2.6",
-                evidence=f"Z-Score={z:.2f} (流动资产对负债覆盖偏紧)",
+                value=round(z, 3),
+                threshold="1.81 <= Z < 2.99",
+                evidence=f"Z-Score={z:.3f} 处于财务灰色预警地带",
                 node="path",
             ))
 
