@@ -87,7 +87,7 @@ def run_analyze(ticker_input: str, html_output: str | None = None) -> None:
     tape_features = extract_tape_features(
         quote=quote,
         momentum=momentum,
-        market_cap=quote.get("amount", 0.0) * 15.0,
+        market_cap=quote.get("total_mv", 0.0),
         theme_info={"concepts": gov_info.get("concepts", [])},
         governance_risk=any(f.level == "🔴" for f in flags),
         hard_event=len(gov_info.get("concepts", [])) > 0,

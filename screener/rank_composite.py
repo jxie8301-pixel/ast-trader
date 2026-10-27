@@ -27,37 +27,48 @@ def rank_composite(
         bl = c.get("board_level") or 1
         name = c.get("name", "")
 
-        # 1. 资金流拉取
+        # 1. 资金流与真实快照拉取
+        real_quote = {}
+        try:
+            real_quote = collector.get_realtime_quote(code_num)
+        except Exception as e:
+            logger.debug(f"获取快照异常: {e}")
+
         try:
             mf = collector.get_money_flow(code_num)
             c["main_net_wan"] = mf.get("main_net_wan", 0.0)
             c["main_ratio"] = mf.get("main_ratio", 0.0)
         except Exception:
-            c["main_net_wan"] = round(seal_amt / 10000.0, 1)
-            c["main_ratio"] = 5.0
+            c["main_net_wan"] = round(seal_amt / 10000.0, 1) if seal_amt else 0.0
+            c["main_ratio"] = 0.0
+
+        close_val = real_quote.get("close", c.get("close", 0.0))
+        pct_val = real_quote.get("pct_chg", pct_chg)
+        amount_val = real_quote.get("amount", amount)
+        turnover_val = real_quote.get("turnover_ratio", 0.0)
+        total_mv_val = real_quote.get("total_mv", 0.0)
 
         # 2. UZI 原生盘口微观打分 (ranker.py preselect score)
         # liquidity (0~4分) + strength (-3~10分) * 2 + activity (0~3分)
-        liquidity_score = min(amount / 10e8, 4.0)
-        strength_score = max(-3.0, min(pct_chg, 10.0))
-        turnover_est = (amount / max(amount * 10.0, 1e8)) * 100.0 if amount else 5.0
-        activity_score = min(turnover_est / 3.0, 3.0)
+        liquidity_score = min(amount_val / 10e8, 4.0)
+        strength_score = max(-3.0, min(pct_val, 10.0))
+        activity_score = min(turnover_val / 3.0, 3.0) if turnover_val > 0 else min(amount_val / 1e8, 2.0)
         tape_score = round(strength_score * 2.0 + liquidity_score + activity_score + bl * 10.0, 1)
         c["rank_score"] = tape_score
 
         # 3. 提取微观特征并运行 24 大一线游资战法匹配
         quote_proxy = {
-            "close": c.get("close", 0.0),
-            "pct_chg": pct_chg,
-            "amount": amount,
-            "high": c.get("close", 0.0),
-            "open": c.get("close", 0.0) * (1 - pct_chg / 100.0),
-            "pre_close": c.get("close", 0.0) / (1 + pct_chg / 100.0) if (1 + pct_chg / 100.0) != 0 else c.get("close", 0.0),
-            "turnover_ratio": turnover_est,
+            "close": close_val,
+            "pct_chg": pct_val,
+            "amount": amount_val,
+            "high": real_quote.get("high", close_val),
+            "open": real_quote.get("open", close_val),
+            "pre_close": real_quote.get("pre_close", close_val),
+            "turnover_ratio": turnover_val,
         }
         momentum_proxy = {
             "volume_ratio": 1.5,
-            "is_bullish_ma": pct_chg > 0,
+            "is_bullish_ma": pct_val > 0,
         }
         theme_proxy = {
             "concepts": c.get("concepts", [c.get("limit_reason", "")]),
@@ -68,7 +79,7 @@ def rank_composite(
         tape_features = extract_tape_features(
             quote=quote_proxy,
             momentum=momentum_proxy,
-            market_cap=amount * 12.0,
+            market_cap=total_mv_val,
             theme_info=theme_proxy,
             governance_risk=False,
             hard_event=True,

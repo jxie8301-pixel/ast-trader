@@ -120,22 +120,51 @@ class EltdxCollector:
         return df
 
     def get_realtime_quote(self, code_str: str) -> dict[str, Any]:
-        """获取单股实时快照。"""
+        """获取单股实时快照及股本市值基本面数据。"""
         eltdx_code, ts_code = normalize_code(code_str)
 
         def _fetch():
             with open_client() as c:
-                return c.quotes.get_snapshots([eltdx_code])
+                sn_list = c.quotes.get_snapshots([eltdx_code])
+                fb = None
+                try:
+                    fb = c.corporate.finance_batch([eltdx_code])
+                except Exception as e:
+                    logger.debug(f"finance_batch 获取失败: {e}")
+                return sn_list, fb
 
-        resp = with_retry(_fetch)
+        resp = with_retry(_fetch, what="quotes.get_snapshots+finance_batch")
         if not resp:
             return {}
 
-        sn = resp[0]
+        sn_list, fb = resp
+        if not sn_list:
+            return {}
+
+        sn = sn_list[0]
         close = float(sn.last_price)
         pre = float(sn.pre_close_price)
         pct_chg = round((close - pre) / pre * 100.0, 2) if pre else 0.0
-        
+
+        # 从真实财务批次中提取总股本、流通股本与 EPS / BPS (单位：万股 / 元)
+        total_share = 0.0
+        float_share = 0.0
+        bps = 0.0
+        eps = 0.0
+        if fb and hasattr(fb, "records") and fb.records:
+            frec = fb.records[0]
+            total_share = float(getattr(frec, "zong_gu_ben_raw_float", 0.0) or 0.0) * 10000.0
+            float_share = float(getattr(frec, "liu_tong_gu_ben_raw_float", 0.0) or 0.0) * 10000.0
+            bps = float(getattr(frec, "mei_gu_jing_zi_chan_raw_float", 0.0) or 0.0)
+            eps = float(getattr(frec, "eps_raw", 0.0) or 0.0)
+
+        total_mv = close * total_share if total_share > 0 else 0.0
+        circ_mv = close * float_share if float_share > 0 else 0.0
+        vol_shares = float(sn.total_hand) * 100.0
+        turnover_ratio = round((vol_shares / float_share) * 100.0, 2) if float_share > 0 else 0.0
+        pe = round(close / eps, 2) if eps > 0 else 0.0
+        pb = round(close / bps, 2) if bps > 0 else 0.0
+
         return {
             "ts_code": ts_code,
             "eltdx_code": eltdx_code,
@@ -147,6 +176,15 @@ class EltdxCollector:
             "pct_chg": pct_chg,
             "vol": float(sn.total_hand),
             "amount": float(sn.amount) if sn.amount else 0.0,
+            "total_share": total_share,
+            "float_share": float_share,
+            "total_mv": total_mv,
+            "circ_mv": circ_mv,
+            "turnover_ratio": turnover_ratio,
+            "bps": bps,
+            "eps": eps,
+            "pe": pe,
+            "pb": pb,
         }
 
     def get_money_flow(self, code_str: str) -> dict[str, Any]:
@@ -235,27 +273,10 @@ class EltdxCollector:
             if rows:
                 out["income"] = pd.DataFrame(rows).sort_values("end_date").reset_index(drop=True)
         except Exception as e:
-            logger.debug(f"专业财务 zip 提取跳过: {e}")
+            logger.warning(f"专业财务 zip 提取异常: {e}")
 
-        if out["income"].empty and not out["cashflow"].empty:
-            rows = []
-            for _, crow in out["cashflow"].iterrows():
-                p = crow.get("end_date", "")
-                np_val = crow.get("net_profit", 0.0)
-                cf_sale = crow.get("c_fr_sale_sg", 0.0)
-                rev_est = cf_sale if cf_sale > 0 else (np_val * 8.0)
-                cogs_est = rev_est * 0.6
-                rows.append({
-                    "end_date": p,
-                    "revenue": rev_est,
-                    "oper_cost": cogs_est,
-                    "operate_profit": np_val * 1.1,
-                    "total_profit": np_val * 1.15,
-                    "n_income": np_val,
-                    "n_income_attr_p": np_val,
-                    "invest_income": 0.0,
-                })
-            out["income"] = pd.DataFrame(rows).sort_values("end_date").reset_index(drop=True)
+        if out["income"].empty:
+            logger.warning(f"未能从本地财务包或远程解析出 {num_code} 的利润表，保持真实空表，绝不伪造合成数据")
 
         return out
 
