@@ -95,11 +95,15 @@ class AuditEngine:
         if governance_info:
             flags.extend(self._check_shareholder_flow(governance_info))
 
-        # 10. Valuation Anomaly (估值透支、PB vs ROE 错配、小盘双杀)
+        # 10. Forward Guidance Anomaly (业绩预告异常与首亏/预亏, 对齐 Ashare Framework 9)
+        if governance_info:
+            flags.extend(self._check_forecast_anomaly(governance_info))
+
+        # 11. Valuation Anomaly (估值透支、PB vs ROE 错配、小盘双杀)
         if quote_info:
             flags.extend(self._check_valuation(ann_bs, ann_inc, quote_info))
 
-        # 11. Related-Party & Subsidiary Exposure (长期股权投资与关联方敞口)
+        # 12. Related-Party & Subsidiary Exposure (长期股权投资与关联方敞口)
         flags.extend(self._check_related_party_exposure(ann_bs, ann_inc))
 
         return flags
@@ -714,6 +718,61 @@ class AuditEngine:
                     metric_refs=["holder_count"],
                 ))
 
+        return flags
+
+    # ─────────────────────────────────────────────────────────────
+    # Framework 9: Forward Guidance Anomaly (对齐 Ashare financial_audit.py:758)
+    # ─────────────────────────────────────────────────────────────
+    def _check_forecast_anomaly(self, gov: dict[str, Any]) -> list[RedFlagItem]:
+        flags = []
+        fc = gov.get("forecast")
+        if not fc or not isinstance(fc, dict):
+            return flags
+        ftype = str(fc.get("type") or "")
+        p_min = _safe_float(fc.get("p_change_min"))
+        p_max = _safe_float(fc.get("p_change_max"))
+        net_min = _safe_float(fc.get("net_profit_min"))
+        ann_date = str(fc.get("ann_date") or "")
+
+        if any(k in ftype for k in ["首亏", "预亏", "续亏"]):
+            flags.append(RedFlagItem(
+                id=make_flag_id("Forecast", "negative_forecast"),
+                framework="Forecast Anomaly",
+                level=LEVEL_FATAL if "首亏" in ftype else LEVEL_HIGH,
+                title=f"业绩预告负面预警: {ftype}",
+                value=ftype,
+                threshold="首亏/预亏/续亏 = 负面预告",
+                evidence=f"{ann_date} 预告类型={ftype}，变动 {p_min}%~{p_max}%" + (f"，净利下限 {net_min/1e4:.0f}万" if net_min else ""),
+                node="state",
+                metric_refs=["forecast"],
+            ))
+        elif any(k in ftype for k in ["略减", "预减"]):
+            flags.append(RedFlagItem(
+                id=make_flag_id("Forecast", "decline_forecast"),
+                framework="Forecast Anomaly",
+                level=LEVEL_MEDIUM,
+                title=f"业绩预告边际下滑: {ftype}",
+                value=ftype,
+                threshold="预减 = 边际负面",
+                evidence=f"{ann_date} 预告类型={ftype}，变动 {p_min}%~{p_max}%",
+                node="state",
+                metric_refs=["forecast"],
+            ))
+
+        if p_min is not None and p_max is not None:
+            width = abs(p_max - p_min)
+            if width > 50:
+                flags.append(RedFlagItem(
+                    id=make_flag_id("Forecast", "wide_forecast_spread"),
+                    framework="Forecast Anomaly",
+                    level=LEVEL_MEDIUM,
+                    title="预告区间过宽 (业绩不确定性大)",
+                    value=round(width, 1),
+                    threshold="区间宽度 > 50pp",
+                    evidence=f"最新预告区间宽度高达 {width:.1f}pp ({p_min}%~{p_max}%)",
+                    node="state",
+                    metric_refs=["forecast"],
+                ))
         return flags
 
     # ─────────────────────────────────────────────────────────────

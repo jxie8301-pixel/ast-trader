@@ -168,6 +168,30 @@ def test_shareholder_dispersion_risk():
     assert chip_flags[0].level == LEVEL_HIGH
 
 
+def test_forecast_anomaly_fatal_loss():
+    """测试业绩预告首亏触发 🔴 致命红旗。"""
+    engine = AuditEngine()
+    gov_info = {
+        "forecast": {
+            "type": "首亏",
+            "p_change_min": -150.0,
+            "p_change_max": -120.0,
+            "net_profit_min": -5000.0,
+            "ann_date": "2026-07-15",
+        }
+    }
+    flags = engine.run_audit(
+        balance_df=pd.DataFrame(),
+        cashflow_df=pd.DataFrame(),
+        income_df=pd.DataFrame(),
+        governance_info=gov_info,
+    )
+    fc_flags = [f for f in flags if f.framework == "Forecast Anomaly"]
+    assert len(fc_flags) == 1
+    assert fc_flags[0].level == LEVEL_FATAL
+    assert "首亏" in fc_flags[0].title
+
+
 def test_trap_detector_eight_signals():
     """测试杀猪盘 8 信号检测引擎。"""
     detector = TrapDetector()
