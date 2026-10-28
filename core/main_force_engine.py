@@ -33,10 +33,17 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 import enum
+import json
+import logging
 import math
+from pathlib import Path
 from typing import Any
 
 import pandas as pd
+
+import config
+
+logger = logging.getLogger("ast_trader.core.main_force_engine")
 
 
 class StageCode(str, enum.Enum):
@@ -123,12 +130,52 @@ class MainForceDecision:
 
 
 class MainForceStateEngine:
-    """生产级主力行为生命周期状态机与反伪装引擎。"""
+    """生产级主力行为生命周期状态机与反伪装引擎 (支持多日跨周期状态机持久化与迟滞控制)。"""
 
-    def __init__(self, persistence_window: int = 2) -> None:
+    def __init__(self, persistence_window: int = 2, cache_file: Path | None = None) -> None:
         self.persistence_window = persistence_window
-        # 内存状态记录器 (ticker -> (prior_stage, consecutive_days))
+        self.cache_file = cache_file if cache_file is not None else (config.CACHE_DIR / "mainforce_history_state.json")
         self._history_state: dict[str, tuple[StageCode, int]] = {}
+        self._load_history_state()
+
+    def _load_history_state(self) -> None:
+        """从本地磁盘缓存加载历史状态机连续性记录。"""
+        if not self.cache_file or not self.cache_file.exists():
+            return
+        try:
+            with open(self.cache_file, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            for ticker, item in data.items():
+                if isinstance(item, (list, tuple)) and len(item) == 2:
+                    stage_str, duration = item
+                    if stage_str in StageCode.__members__:
+                        self._history_state[ticker] = (StageCode[stage_str], int(duration))
+        except Exception as e:
+            logger.debug(f"加载主力状态机历史缓存异常 (已安全降级): {e}")
+
+    def _save_history_state(self) -> None:
+        """持久化保存历史状态机连续性记录。"""
+        if not self.cache_file:
+            return
+        try:
+            self.cache_file.parent.mkdir(parents=True, exist_ok=True)
+            data = {
+                ticker: (stage.value, duration)
+                for ticker, (stage, duration) in self._history_state.items()
+            }
+            with open(self.cache_file, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            logger.debug(f"保存主力状态机历史缓存异常: {e}")
+
+    def get_prior_state(self, ticker: str) -> tuple[StageCode, int] | None:
+        """获取标的历史状态及历时。"""
+        return self._history_state.get(ticker)
+
+    def update_history_state(self, ticker: str, stage: StageCode, days: int) -> None:
+        """更新并持久化指定标的状态记录。"""
+        self._history_state[ticker] = (stage, days)
+        self._save_history_state()
 
     def reset_state(self, ticker: str | None = None) -> None:
         """重置状态记录（用于测试或交易日切换）。"""
@@ -136,6 +183,7 @@ class MainForceStateEngine:
             self._history_state.pop(ticker, None)
         else:
             self._history_state.clear()
+        self._save_history_state()
 
     def evaluate(
         self,
@@ -684,17 +732,22 @@ class MainForceStateEngine:
         is_transitional: bool,
         audit: AntiSpoofingAudit,
     ) -> tuple[StageCode, str]:
-        """应用状态转移迟滞与回退规则，避免频繁误报。"""
+        """应用状态转移迟滞与回退规则，避免频繁误报。支持持久化与未核验重置。"""
         record = self._history_state.get(ticker)
         if not record:
             self._history_state[ticker] = (candidate_stage, 1)
+            self._save_history_state()
             return candidate_stage, "初始周期确立"
 
         prior_stage, duration = record
+        # 针对 R14: 若前序为未核验，恢复为真实阶段时重置计数，不继承未核验周期
+        if prior_stage == StageCode.STAGE_UNVERIFIED or str(prior_stage) == "STAGE_UNVERIFIED":
+            duration = 0
 
         # 规则 1: 高危出货熔断 (STAGE_6_DISTRIBUTION) - 买方风控 1 日瞬时切换
         if candidate_stage == StageCode.STAGE_6_DISTRIBUTION and candidate_score >= 60.0:
             self._history_state[ticker] = (StageCode.STAGE_6_DISTRIBUTION, 1)
+            self._save_history_state()
             note = f"⚠️ 触发高危派发快速熔断：由前序状态 [{prior_stage.name}] 瞬时切换至出货派发期。"
             return StageCode.STAGE_6_DISTRIBUTION, note
 
@@ -708,12 +761,14 @@ class MainForceStateEngine:
                     note = f"⏳ 状态转移迟滞确认中：候选 [{candidate_stage.name}] 得分 ({candidate_score:.1f}) 未达碾压阈值且有扰动，维持前序蓄势。"
                     fallback = StageCode.STAGE_3_QUIET_WASHOUT if prior_stage == StageCode.STAGE_3_QUIET_WASHOUT else prior_stage
                     self._history_state[ticker] = (fallback, duration + 1)
+                    self._save_history_state()
                     return fallback, note
 
         # 规则 3: 假突破回退 (Failed Breakout Fallback)
         if audit.fake_breakout_detected and prior_stage == StageCode.STAGE_4_HEALTHY_MARKUP:
             fallback = StageCode.STAGE_6_DISTRIBUTION if candidate_score > 60 else StageCode.STAGE_3_QUIET_WASHOUT
             self._history_state[ticker] = (fallback, 1)
+            self._save_history_state()
             note = f"❌ 遭遇假突破诱多打压：由主升通道回退至 [{fallback.name}]。"
             return fallback, note
 
@@ -725,6 +780,7 @@ class MainForceStateEngine:
             self._history_state[ticker] = (candidate_stage, 1)
             note = f"状态机从 [{prior_stage.name}] 顺畅迁移至 [{candidate_stage.name}]"
 
+        self._save_history_state()
         return candidate_stage, note
 
     # ─────────────────────────────────────────────────────────────

@@ -30,6 +30,7 @@ logging.basicConfig(
 from core.audit_engine import AuditEngine
 from core.game_features import GameFeatureExtractor
 from core.judgment_chain import JudgmentChainRunner
+from core.microstructure import MicrostructureAnalyzer
 from core.seat_matcher import SeatMatcher
 from core.trap_detector import TrapDetector
 from core.youzi_personas import evaluate_youzi_personas, extract_tape_features
@@ -87,6 +88,7 @@ def run_analyze(ticker_input: str, html_output: str | None = None) -> None:
 
     # 4. 真实资金流与高频微观结构 (开源金工聪明钱 Q 因子、集合竞价与换手沉淀)
     money_flow = collector.get_money_flow(ts_code)
+    micro_analyzer = MicrostructureAnalyzer()
     microstructure = collector.get_microstructure(
         ts_code,
         current_price=quote.get("close", 0.0),
@@ -95,6 +97,7 @@ def run_analyze(ticker_input: str, html_output: str | None = None) -> None:
         ladder_info=ladder_info,
         float_share=quote.get("float_share", 0.0),
         quote=quote,
+        analyzer=micro_analyzer,
     )
 
     # 5. 近 30 天龙虎榜席位匹配

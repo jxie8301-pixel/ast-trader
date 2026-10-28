@@ -225,6 +225,7 @@ def print_screener_table(result_obj: Any, mode: str = "close") -> None:
     table.add_column("涨跌幅", justify="right", width=9)
     table.add_column("梯队身位", style="yellow", width=12)
     table.add_column("所属题材", style="green", width=14)
+    table.add_column("主力净额", justify="right", width=15)
     table.add_column("决断档位", justify="center", width=10)
     table.add_column("建议仓位", justify="right", width=10)
     table.add_column("主力阶段与微观特征", style="dim", width=28)
@@ -244,6 +245,15 @@ def print_screener_table(result_obj: Any, mode: str = "close") -> None:
         lead_str = f" [bold red](龙一)[/bold red]" if is_lead else ""
         tier_desc = f"{b_lvl}连板{lead_str}" if b_lvl > 0 else "首板/潜伏"
 
+        # 主力资金流呈现 (支持降级标识)
+        if item.get("money_flow_degraded", False) or item.get("main_net_wan") is None:
+            flow_str = "[yellow]未核验(降级)[/yellow]"
+        else:
+            net_w = float(item.get("main_net_wan", 0.0) or 0.0)
+            ratio = float(item.get("main_ratio", 0.0) or 0.0)
+            f_color = "red" if net_w > 0 else ("green" if net_w < 0 else "white")
+            flow_str = f"[{f_color}]{net_w:+.0f}万 ({ratio:+.1f}%)[/{f_color}]"
+
         gear = card.get("decision_gear", "观察")
         gear_color = "red" if "回避" in gear else ("green" if "做多" in gear or "核心" in gear or "买入" in gear else "yellow")
         gear_fmt = f"[{gear_color} bold]【{gear}】[/{gear_color} bold]"
@@ -262,6 +272,7 @@ def print_screener_table(result_obj: Any, mode: str = "close") -> None:
             f"[{pct_color}]{pct:+.2f}%[/{pct_color}]",
             tier_desc,
             t_name,
+            flow_str,
             gear_fmt,
             pos_str,
             mf_summary,

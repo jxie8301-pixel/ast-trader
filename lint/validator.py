@@ -7,13 +7,14 @@ import logging
 import re
 from typing import Any
 
-from core.red_flags import LEVEL_FATAL, RedFlagItem
+# 致命红旗标识 (解耦与 core.red_flags 的反向循环依赖，lint 作为纯净独立门控模块)
+LEVEL_FATAL = "🔴"
 
 logger = logging.getLogger("ast_trader.lint")
 
 
 class LintError(ValueError):
-    """违反质量门控硬约束异常。"""
+    """违反质量门控硬约束异常 (保留用于兼容语义；生产环境优先采用'以纠代抛'自动降级清零门控机制)。"""
 
 
 class LintValidator:

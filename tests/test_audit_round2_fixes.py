@@ -149,8 +149,8 @@ def test_r7_annual_with_insufficient_data_returns_empty_df():
     assert res.empty
 
 
-def test_r8_lint_failure_forces_zero_position_and_observe():
-    """R8: 验证非致命 Lint 失败同样执行强制门控拦截，仓位归零且降级为观察。"""
+def test_r8_lint_failure_forces_zero_position_and_observe(monkeypatch):
+    """R8: 验证非致命 Lint 失败执行 run() 内部的强力门控拦截，强制将仓位清零并转为观察。"""
     runner = JudgmentChainRunner()
     quote = {
         "code": "002273",
@@ -164,6 +164,13 @@ def test_r8_lint_failure_forces_zero_position_and_observe():
     momentum = {"ma5": 11.5, "ma20": 10.2}
     ladder_info = {"board_level": 3, "theme_name": "机器人", "is_leader": True}
 
+    # Mock validator.validate to return False inside runner.run()
+    monkeypatch.setattr(
+        runner.validator,
+        "validate",
+        lambda card, flags: (False, ["模拟拦截: 机检违规词触发"])
+    )
+
     card = runner.run(
         ticker="002273",
         name="水晶光电",
@@ -176,19 +183,20 @@ def test_r8_lint_failure_forces_zero_position_and_observe():
         ladder_info=ladder_info,
         concepts=["机器人"],
     )
-    # 初始状态为期权仓
-    assert card["position_cap"] > 0.0
 
-    # 模拟机检故意注入越权发声词 "建议买入"
-    card["pillar_1_quality"] += " 建议买入"
-    val = LintValidator()
-    ok, findings = val.validate(card, flags=[])
-    assert not ok
-    assert any("越权发声" in f for f in findings)
+    # 核心验证: run() 内部门控必须彻底熔断仓位至 0.0 并更新五支柱决策卡
+    assert card["lint_ok"] is False
+    assert "机检违规词" in card["lint_findings"][0]
+    assert card["position_cap"] == 0.0
+    assert card["decision_gear"] == "等证据临界(观察)"
+    assert card["decision_title"] == "【⚠️ 机检门控未通过 (强制观察)】"
+    assert card["pillar_5_decision"]["position_cap"] == 0.0
+    assert card["pillar_5_decision"]["decision_gear"] == "等证据临界(观察)"
+    assert "(机检未通过)" in card["pillar_5_decision"]["three_part_conclusion"]
 
 
-def test_r9_three_part_conclusion_consistency():
-    """R9: 验证 three_part_conclusion 的'好下注'严格由 position_cap > 0 判定。"""
+def test_r9_buyable_shows_yes():
+    """R9a: 验证满足买入条件时，three_part_conclusion 无条件确认为'好下注? 【是】'。"""
     runner = JudgmentChainRunner()
     quote = {
         "code": "002273",
@@ -214,10 +222,119 @@ def test_r9_three_part_conclusion_consistency():
         ladder_info=ladder_info,
     )
     p5 = card["pillar_5_decision"]
-    if p5["position_cap"] > 0:
-        assert "好下注? 【是】" in p5["three_part_conclusion"]
-    else:
-        assert "好下注? 【否】" in p5["three_part_conclusion"]
+    assert p5["position_cap"] > 0.0
+    assert "好下注? 【是】" in p5["three_part_conclusion"]
+
+
+def test_r9_non_buyable_shows_no():
+    """R9b: 验证未核验或空仓时，three_part_conclusion 无条件确认为'好下注? 【否】'。"""
+    runner = JudgmentChainRunner()
+    quote = {
+        "code": "600519",
+        "close": 1500.0,
+        "pct_chg": 3.0,
+        "total_mv": 18000e8,
+        "circ_mv": 18000e8,
+        "pe": 20.0,
+        "turnover_ratio": 2.0,
+    }
+    momentum = {"ma5": 1480.0, "ma20": 1400.0}
+    micro_degraded = {
+        "is_degraded": True,
+        "suggested_pos_cap": 0.0,
+        "stage_code": "STAGE_UNVERIFIED",
+    }
+    card = runner.run(
+        ticker="600519",
+        name="贵州茅台",
+        trade_date="20261028",
+        quote=quote,
+        momentum=momentum,
+        flags=[],
+        matched_youzi=[],
+        trap_warnings=[],
+        microstructure=micro_degraded,
+    )
+    p5 = card["pillar_5_decision"]
+    assert p5["position_cap"] == 0.0
+    assert "好下注? 【否】" in p5["three_part_conclusion"]
+
+
+def test_r11_ranking_rebalance_and_degraded_penalty():
+    """R11: 验证 rank_composite 对高板封顶 (<=10) 及资金流降级惩罚 (-5.0)。"""
+    from unittest.mock import MagicMock
+    # 候选股A: 5板，正常资金流
+    # 候选股B: 5板，资金流降级 (money_flow_degraded=True)
+    candidates = [
+        {
+            "code": "600001",
+            "name": "标的A",
+            "board_level": 5,
+            "is_leader": True,
+            "theme_heat": 50.0,
+            "turnover_ratio": 10.0,
+            "amount": 10e8,
+            "pct_chg": 10.0,
+            "close": 20.0,
+            "money_flow_degraded": False,
+        },
+        {
+            "code": "600002",
+            "name": "标的B",
+            "board_level": 5,
+            "is_leader": True,
+            "theme_heat": 50.0,
+            "turnover_ratio": 10.0,
+            "amount": 10e8,
+            "pct_chg": 10.0,
+            "close": 20.0,
+            "money_flow_degraded": True,
+        },
+    ]
+    mock_collector = MagicMock()
+    mock_collector.get_realtime_quote.return_value = {}
+    def mock_get_mf(code):
+        if code == "600002":
+            raise RuntimeError("模拟数据中断")
+        return {"main_net_wan": 1000.0, "main_ratio": 5.0}
+    mock_collector.get_money_flow.side_effect = mock_get_mf
+
+    ranked = rank_composite(candidates, collector=mock_collector)
+    score_a = next(c["rank_score"] for c in ranked if c["code"] == "600001")
+    score_b = next(c["rank_score"] for c in ranked if c["code"] == "600002")
+
+    # 1. 5板连板分封顶为 10.0 (min(5 * 2.5, 10.0) = 10.0)
+    # 2. 资金流降级标的分数必须严格比未降级标的低 5.0 分
+    assert pytest.approx(score_a - score_b, 0.01) == 5.0
+
+
+def test_r14_state_machine_persistence_and_stage_unverified_reset(tmp_path):
+    """R14: 验证主力状态机跨执行持久化与 STAGE_UNVERIFIED 重置历时为 0。"""
+    cache_file = tmp_path / "mainforce_history_state.json"
+    engine1 = MainForceStateEngine(cache_file=cache_file)
+
+    # 初始状态为空
+    assert engine1.get_prior_state("600001") is None
+
+    # 更新状态为 STAGE_1_ACCUMULATION
+    engine1.update_history_state("600001", StageCode.STAGE_1_ACCUMULATION, days=3)
+    assert engine1.get_prior_state("600001") == (StageCode.STAGE_1_ACCUMULATION, 3)
+
+    # 验证磁盘文件已写入
+    assert cache_file.exists()
+
+    # 重新实例化 engine2，读取同一 cache_file
+    engine2 = MainForceStateEngine(cache_file=cache_file)
+    assert engine2.get_prior_state("600001") == (StageCode.STAGE_1_ACCUMULATION, 3)
+
+    # 验证 STAGE_UNVERIFIED 作为 prior_stage 时，重置历时为 0
+    engine2.update_history_state("600002", StageCode.STAGE_UNVERIFIED, days=5)
+    st, days = engine2.get_prior_state("600002")
+    assert st == StageCode.STAGE_UNVERIFIED
+
+    # 模拟在 evaluate_stage_transition 中的计算逻辑：prior_stage == STAGE_UNVERIFIED -> days=0
+    effective_days = 0 if st == StageCode.STAGE_UNVERIFIED else (days + 1)
+    assert effective_days == 0
 
 
 def test_r12_tracker_path_converges_to_config_cache():

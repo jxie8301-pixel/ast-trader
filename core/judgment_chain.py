@@ -13,8 +13,6 @@ import logging
 from typing import Any
 import pandas as pd
 
-logger = logging.getLogger("ast_trader.core.judgment_chain")
-
 import config
 from core.capital_matrix import CapitalMatrixRadar
 from core.derived_metrics import DerivedMetricsCalculator
@@ -28,6 +26,8 @@ from core.derivation import (
 from core.execution_playbook import PlaybookBuilder
 from lint.validator import LintValidator
 from .red_flags import LEVEL_FATAL, RedFlagItem, get_top3_risks, has_fatal_red_flags
+
+logger = logging.getLogger("ast_trader.core.judgment_chain")
 
 
 class JudgmentChainRunner:
@@ -66,111 +66,21 @@ class JudgmentChainRunner:
 
         return "TRACK_B_INSTITUTIONAL", "机构趋势与产业中军"
 
-    def run(
+    # =========================================================================
+    # 模块化支柱构建方法 (消除上帝方法膨胀)
+    # =========================================================================
+
+    def _build_pillar_1_quality(
         self,
-        ticker: str,
-        name: str,
-        trade_date: str,
-        quote: dict[str, Any],
-        momentum: dict[str, Any],
+        derived_data: dict[str, Any],
         flags: list[RedFlagItem],
-        matched_youzi: list[dict[str, Any]],
-        trap_warnings: list[str],
-        matched_personas: list[dict[str, Any]] | None = None,
-        concepts: list[str] | None = None,
-        ladder_info: dict[str, Any] | None = None,
-        sentiment_overview: Any | None = None,
-        money_flow: dict[str, Any] | None = None,
-        lhb_records: list[dict[str, Any]] | None = None,
-        governance_info: dict[str, Any] | None = None,
-        microstructure: dict[str, Any] | None = None,
-        daily_df: Any | None = None,
-        financial_reports: dict[str, Any] | None = None,
-        data_health: dict[str, Any] | None = None,
-    ) -> dict[str, Any]:
-        """合成兼具 Ashare 深度投研严谨性与 A 股盘口微观实战性的全维决断卡。"""
-        price = quote.get("close", 0.0)
-        pct_chg = quote.get("pct_chg", 0.0)
-        turnover = quote.get("turnover_ratio", 0.0)
-        total_mv = quote.get("total_mv", 0.0)
-        circ_mv = quote.get("circ_mv", 0.0)
-        pe_val = quote.get("pe", 0.0)
-        pb_val = quote.get("pb", 0.0)
-        total_shares_yi = (
-            quote.get("total_share", 0.0)
-            or ((quote.get("total_mv") or quote.get("circ_mv") or 1e8) / price if price > 0 else 1e8)
-        ) / 1e8
-        if total_shares_yi <= 0:
-            total_shares_yi = 1.0
-
-        ma5 = momentum.get("ma5", price)
-        ma20 = momentum.get("ma20", price)
-        overhead_chips = momentum.get("overhead_chip_pct", 0.0)
-        curr_dd = momentum.get("current_drawdown", 0.0)
-        support_lvl = momentum.get("support_level", round(price * 0.95, 2))
-        resistance_lvl = momentum.get("resistance_level", round(price * 1.05, 2))
-        concept_list = concepts or []
-
-        # 交易规制
-        is_gem_star = ticker.startswith(("300", "301", "688"))
-        is_bse = ticker.startswith(("8", "4", "920"))
-        board_name = "双创板 (20%涨跌停)" if is_gem_star else ("北交所 (30%涨跌停)" if is_bse else "主板 (10%涨跌停)")
-        stock_track, track_name = self.classify_stock_track(quote, ladder_info, concept_list)
-
-        # 监管偏离度 (10日涨幅)
-        ret_10d = 0.0
-        if daily_df is not None and hasattr(daily_df, "empty") and not daily_df.empty and len(daily_df) >= 2:
-            closes_asc = daily_df.iloc[::-1]["close"].reset_index(drop=True)
-            c_latest = float(closes_asc.iloc[-1])
-            c_10_ago = float(closes_asc.iloc[-min(10, len(closes_asc))])
-            if c_10_ago > 0:
-                ret_10d = round((c_latest - c_10_ago) / c_10_ago * 100.0, 1)
-
-        # 致命红旗与排雷检视
-        fatal_flags = [f for f in flags if f.level == LEVEL_FATAL]
-        high_flags = [f for f in flags if f.level == "🟠"]
-        is_fatal = len(fatal_flags) > 0
-
-        # 宏观大盘与情绪闸门 (Macro Regime / Speculative Gate)
-        is_market_ice = False
-        p_gate = "未接入大盘连板情绪"
-        macro_res = getattr(sentiment_overview, "macro_regime_result", None) if sentiment_overview else None
-        if macro_res is not None:
-            is_market_ice = not macro_res.is_gate_open
-            p_gate = macro_res.gate_description
-        elif sentiment_overview is not None:
-            phase = getattr(sentiment_overview, "sentiment_phase", "未知")
-            space = getattr(sentiment_overview, "space_board_level", 0)
-            tickers = "、".join(getattr(sentiment_overview, "space_board_tickers", [])[:2]) or "无"
-            zt_count = getattr(sentiment_overview, "total_limit_up_count", 0)
-            dt_count = getattr(sentiment_overview, "total_limit_down_count", 0)
-            bk_count = getattr(sentiment_overview, "total_broken_count", 0)
-            bk_rate = getattr(sentiment_overview, "broken_rate_pct", 0.0)
-            stats_str = f"涨停 {zt_count}家 / 跌停 {dt_count}家 / 炸板 {bk_count}家 (炸板率 {bk_rate:.1f}%)"
-            if dt_count >= 15 or bk_rate >= 35.0 or phase in ("混沌冰点期", "退潮分歧期", "高位分歧期"):
-                is_market_ice = True
-                p_gate = f"⚠️ 情绪闸门收紧 (市场处于【{phase}】，空间板 {space}板 [{tickers}]，{stats_str}，后排亏钱效应扩散，短线防守控仓)"
-            else:
-                p_gate = f"✓ 情绪闸门放行 (市场处于【{phase}】，空间板 {space}板 [{tickers}]，{stats_str}，短线情绪具备赚钱效应)"
-
-        # =========================================================================
-        # 0. 衍生财务指标与首页「赚不赚钱」数据看板 (Derived Metrics & Dashboard)
-        # =========================================================================
-        f_rep = financial_reports or {"income": pd.DataFrame(), "balance": pd.DataFrame(), "cashflow": pd.DataFrame()}
-        mainbz_list = (governance_info or {}).get("main_business", [])
-        derived_data = self.derived_calc.compute_metrics(
-            income_df=f_rep.get("income", pd.DataFrame()),
-            balance_df=f_rep.get("balance", pd.DataFrame()),
-            cashflow_df=f_rep.get("cashflow", pd.DataFrame()),
-            quote=quote,
-            mainbz=mainbz_list,
-        )
-        dashboard = self.derived_calc.build_profitability_dashboard(derived_data, industry_name=track_name)
-
-        # =========================================================================
-        # 1. 支柱 ❶ 是不是好公司？(质地五问 · 铁门筛选 · 筛选信号不进乘法)
-        # =========================================================================
-        # 提取关键质地指标
+        governance_info: dict[str, Any] | None,
+        concept_list: list[str],
+        is_fatal: bool,
+        fatal_flags: list[RedFlagItem],
+        data_health: dict[str, Any] | None,
+    ) -> tuple[str, str, list[dict[str, str]]]:
+        """支柱 ❶: 是不是好公司？(质地五问 · 铁门筛选 · 筛选信号不进乘法)."""
         prof_m = derived_data.get("profitability", {})
         cf_m = derived_data.get("cashflow", {})
         vit_m = derived_data.get("latest_vitals", {})
@@ -183,8 +93,8 @@ class JudgmentChainRunner:
         debt_ratio = prof_m.get("debt_to_assets")
         pledge_ratio = float((governance_info or {}).get("pledge_ratio", 0.0) or 0.0)
         has_reduction = bool((governance_info or {}).get("has_reduction_plan", False))
+        mainbz_list = (governance_info or {}).get("main_business", [])
 
-        # 五个子判定表 (严格三态 ✓ / ⚠️ / ✗，严禁以伪造默认值充数)
         # Q1: 生意模式赚钱吗
         if gm_val is None or nm_val is None:
             j_biz = "⚠️"
@@ -195,6 +105,8 @@ class JudgmentChainRunner:
                 f"毛利率 {gm_val:.1f}% / 净利率 {nm_val:.1f}% (赚辛苦钱，议价权中等)" if j_biz == "⚠️" else
                 f"毛利率 {gm_val:.1f}% / 净利率 {nm_val:.1f}% (红海恶性价格战，薄利甚至亏损)"
             )
+        if roe_val is not None:
+            ev_biz += f"；最新ROE={roe_val:.1f}%"
 
         # Q2: 赚钱质量真吗
         if c_ratio is None:
@@ -228,7 +140,7 @@ class JudgmentChainRunner:
                 ev_moat = f"核心业务【{top_biz_name}】营收占比 {top_biz_ratio:.1f}%，主营多元分散，单项壁垒无法对全公司完全背书"
             else:
                 j_moat = "✗"
-                ev_moat = f"主营分散且传统，热点概念营收占比极微，缺乏长期结构性护城河"
+                ev_moat = "主营分散且传统，热点概念营收占比极微，缺乏长期结构性护城河"
 
         # Q4: 管理层可信吗
         if has_reduction and pledge_ratio >= 40.0:
@@ -270,7 +182,6 @@ class JudgmentChainRunner:
                 j_fin = "⚠️"
             ev_fin += " (⚠️ 财务三表部分接口取数异常，财务数据已降级估算)"
 
-        # 质地五问子判定表汇总
         sub_verdicts_quality = [
             {"question": "① 生意模式赚钱吗", "judgment": j_biz, "evidence": ev_biz},
             {"question": "② 赚钱质量真吗", "judgment": j_quality, "evidence": ev_quality},
@@ -279,7 +190,6 @@ class JudgmentChainRunner:
             {"question": "⑤ 财务底子稳吗", "judgment": j_fin, "evidence": ev_fin},
         ]
 
-        # 质地 verdict 综合判定 (好 / 部分好 / 不好)
         checks = [j_biz, j_quality, j_moat, j_mgmt, j_fin]
         if checks.count("✓") >= 4 and "✗" not in checks:
             quality_verdict = "好"
@@ -295,42 +205,42 @@ class JudgmentChainRunner:
             f"判定: 【{quality_verdict}】 — {quality_desc} (筛选信号，不进估值乘法)\n"
             + "\n".join([f"  • {sv['question']}: [{sv['judgment']}] {sv['evidence']}" for sv in sub_verdicts_quality])
         )
+        return pillar_quality_summary, quality_verdict, sub_verdicts_quality
 
-        # =========================================================================
-        # 2. 支柱 ❷ 在变好吗？(状态跃迁 λ · 实锤/回声分级 · 全链唯一「该等什么」)
-        # =========================================================================
+    def _build_pillar_2_state(
+        self,
+        derived_data: dict[str, Any],
+        concept_list: list[str],
+        ladder_info: dict[str, Any] | None,
+        mainbz_list: list[dict[str, Any]],
+    ) -> tuple[str, str, str, bool]:
+        """支柱 ❷: 在变好吗？(状态跃迁 λ · 实锤/回声分级 · 全链唯一「该等什么」)."""
         growth_m = derived_data.get("growth", {})
-        rev_cagr = growth_m.get("revenue_cagr_3y")
-        ni_cagr = growth_m.get("net_income_cagr_3y")
         rev_yoy = growth_m.get("revenue_yoy_latest")
         ni_yoy = growth_m.get("net_income_yoy_latest")
 
         has_reorg = any("重组" in c or "国企改革" in c or "并购" in c for c in concept_list)
         is_tech = any("AI" in c or "算力" in c or "半导体" in c or "机器人" in c for c in concept_list)
 
-        # λ 跳变引擎识别
+        top_biz_name = str(mainbz_list[0].get("name", "核心主业")) if mainbz_list else "核心业务"
+        top_biz_ratio = float(mainbz_list[0].get("ratio", 0.0) or 0.0) if mainbz_list else 0.0
+
         if has_reorg:
             lambda_engine = "国企资产注入/并购重组重塑生产函数预期"
-            lambda_signal = "重组方案获批、控制权变更与资产对价落地"
             identity_p = "P4 (重命名重组瓶颈候选)"
         elif is_tech and (rev_yoy is not None and rev_yoy > 0.25):
             lambda_engine = "新兴科技主线景气放量 + 龙头大客户供应链切入"
-            lambda_signal = "单季订单翻倍、高毛利分部放量"
             identity_p = "P3 (高景气赛道先锋龙头)"
         elif rev_yoy is not None and rev_yoy > 0.15:
             lambda_engine = "主营内生稳健扩产 + 渠道下沉渗透"
-            lambda_signal = "季度营收持续稳健抬升"
             identity_p = "P2 (细分产业优势标的)"
         elif rev_yoy is not None:
             lambda_engine = "存量低速周期震荡"
-            lambda_signal = "缺乏明确突发加速跳变事件"
             identity_p = "P1 (普通行业参与者)"
         else:
             lambda_engine = "增长数据未披露/未确认"
-            lambda_signal = "定期财务报告增长数据待补充"
             identity_p = "P1 (普通行业参与者)"
 
-        # 实锤 vs 回声分级表
         evidence_hierarchy = []
         if rev_yoy is not None and ni_yoy is not None:
             evidence_hierarchy.append(f"【实锤】最新定期报告营收 YoY {rev_yoy*100:+.1f}% / 净利 YoY {ni_yoy*100:+.1f}% (经财务披露核验)")
@@ -341,7 +251,6 @@ class JudgmentChainRunner:
         if not evidence_hierarchy:
             evidence_hierarchy.append("【未确认】主线催化剂尚处于传闻调研阶段，缺乏审计报表与大客户确收实锤")
 
-        # 全链唯一的「该等什么」(临界点)
         if has_reorg:
             critical_wait = "等待资产重组预案披露日及交易所问询函回复，重点核验置入标的净资产评估增值率与对赌承诺"
         elif is_tech:
@@ -349,7 +258,6 @@ class JudgmentChainRunner:
         else:
             critical_wait = "等待行业下游资本开支指引拐点，或下次定期报告中经营现金流 (OCF) 能否实现同比由负转正"
 
-        # 状态判定 (↑变好+证据确认 / ↑变好但仅注意力·未确认 / 横盘 / ↓变差)
         if rev_yoy and rev_yoy > 0.20 and ni_yoy and ni_yoy > 0.15 and "【实锤】" in evidence_hierarchy[0]:
             state_verdict = "↑变好+证据确认"
         elif ladder_info and ladder_info.get("board_level", 0) >= 2:
@@ -366,10 +274,20 @@ class JudgmentChainRunner:
             f"  • 无记忆性警示: 坚决戒除均值回归假象，买入必须由 λ↑ 或证据斜率转正驱动\n"
             f"  • ★ 全链唯一「该等什么」: {critical_wait}"
         )
+        return pillar_state_summary, state_verdict, critical_wait, is_tech
 
-        # =========================================================================
-        # 3. 支柱 ❸ 贵不贵？(P=F+N 叙事溢价拆解 + 反向DCF + [SOTP, DCF]双锚)
-        # =========================================================================
+    def _build_pillar_3_odds(
+        self,
+        price: float,
+        total_shares_yi: float,
+        pe_val: float,
+        total_mv: float,
+        derived_data: dict[str, Any],
+        is_tech: bool,
+        mainbz_list: list[dict[str, Any]],
+    ) -> tuple[str, str, float, float, Any, Any, Any, bool]:
+        """支柱 ❸: 贵不贵？(P=F+N 叙事溢价拆解 + 反向DCF + [SOTP, DCF]双锚). 严格断流未核验净利润."""
+        vit_m = derived_data.get("latest_vitals", {})
         raw_ni = vit_m.get("latest_net_income")
         ni_is_verified = False
         net_income_latest = None
@@ -381,14 +299,12 @@ class JudgmentChainRunner:
             ni_is_verified = True
 
         if not ni_is_verified or net_income_latest is None:
-            # 严格贯彻买方数据纪律: 净利润缺失或未通过核验，严禁编造 0.1 亿计算虚假 DCF/SOTP
             odds_verdict = "未核验(财务缺失)"
             sotp_ps = 0.0
             dcf_ps = 0.0
             deriv = None
             anchor = None
             rdcf = None
-            pfn = None
             pillar_odds_summary = (
                 "判定: 【未核验(财务缺失)】 (估值不可计算)\n"
                 "  • 警告: 最新净利润与 PE 估值基准缺失或未核验，严禁根据编造数值生成 DCF / SOTP 价格锚点！\n"
@@ -409,7 +325,6 @@ class JudgmentChainRunner:
             sotp_ps = anchor["low"]["value"]
             dcf_ps = anchor["high"]["value"]
 
-            # 赔率判定 (便宜(有余地) / 合理 / 已被价格计入 / 买完完美未来)
             if price <= sotp_ps:
                 odds_verdict = "便宜(有余地)"
             elif price <= dcf_ps:
@@ -440,9 +355,17 @@ class JudgmentChainRunner:
                 f"  • 合理价区间 [SOTP, DCF]: {anchor_str}"
             )
 
-        # =========================================================================
-        # 4. 支柱 ❹ 主力行为生命周期与路径承载 (结合 Main Force Engine & 微观结构)
-        # =========================================================================
+        return pillar_odds_summary, odds_verdict, sotp_ps, dcf_ps, deriv, anchor, rdcf, ni_is_verified
+
+    def _build_pillar_4_path(
+        self,
+        price: float,
+        overhead_chips: float,
+        sotp_ps: float,
+        microstructure: dict[str, Any] | None,
+        is_fatal: bool,
+    ) -> tuple[str, str, bool, str, str, str, str | None, float, float, bool, float | None, float]:
+        """支柱 ❹: 主力行为生命周期与路径承载 (结合 Main Force Engine & 微观结构). 显式标识降级."""
         micro = microstructure or {}
         is_micro_degraded = bool(micro.get("is_degraded", False))
         mf_stage_code = micro.get("stage_code", "")
@@ -464,7 +387,6 @@ class JudgmentChainRunner:
         auc_chg = micro.get("auction_open_chg_pct", 0.0)
         auc_amt = micro.get("auction_open_amt_wan", 0.0)
 
-        # 筹码结构与左尾深度 (安全处理 sotp_ps 缺失)
         profit_chip_pct = round(100.0 - overhead_chips, 1)
         depth_to_sotp = round((price - sotp_ps) / price * -100.0, 1) if (price > 0 and sotp_ps > 0) else None
         depth_sotp_str = f"{depth_to_sotp:.1f}%" if depth_to_sotp is not None else "未核验"
@@ -477,7 +399,6 @@ class JudgmentChainRunner:
         elif auc_amt > 0:
             flow_parts.append(f"早盘竞价平稳 ({auc_chg:+.2f}%, {auc_amt:.0f}万)")
 
-        # 路径可承受性判定 (可承受 / 高尾险·不可承受 / 未核验)
         if is_micro_degraded:
             path_verdict = "未核验(微观缺失)"
         elif is_fatal or mf_stage_code in ("STAGE_6_DISTRIBUTION", "STAGE_7_PASSIVE_DRIFT") or overhead_chips >= 55.0:
@@ -499,10 +420,51 @@ class JudgmentChainRunner:
             if filtered_audits:
                 pillar_path_summary += f"\n  • 反伪装穿透: {' | '.join(filtered_audits)}"
 
-        # =========================================================================
-        # 5. 支柱 ❺ 实战决断与执行战术 (双轨实操战术 + T+1纪律 + 监管偏离)
-        # =========================================================================
-        # 监管余量量化
+        return (
+            pillar_path_summary,
+            path_verdict,
+            is_micro_degraded,
+            mf_stage_code,
+            mf_stage,
+            mf_behavior,
+            mf_override,
+            mf_cap,
+            mf_conf,
+            is_trans,
+            depth_to_sotp,
+            profit_chip_pct,
+        )
+
+    def _decide_gear(
+        self,
+        price: float,
+        state_verdict: str,
+        odds_verdict: str,
+        path_verdict: str,
+        quality_verdict: str,
+        is_fatal: bool,
+        is_market_ice: bool,
+        stock_track: str,
+        macro_res: Any | None,
+        mf_stage_code: str,
+        mf_override: str | None,
+        is_micro_degraded: bool,
+        mf_cap: float | None,
+        ni_is_verified: bool,
+        fatal_flags: list[RedFlagItem],
+        ladder_info: dict[str, Any] | None,
+        ret_10d: float,
+        is_gem_star: bool,
+        is_bse: bool,
+        overhead_chips: float,
+        sotp_ps: float,
+        ma5: float,
+        ma20: float,
+        support_lvl: float,
+        resistance_lvl: float,
+        critical_wait: str,
+    ) -> tuple[str, str, float, str, str, str, str]:
+        """纯函数决策表：映射买方行动档位、建议仓位与持币/持股双轨战术。"""
         margin_100 = round(max(0.0, 100.0 - ret_10d), 1)
         board_cap_pct = 20.0 if is_gem_star else (30.0 if is_bse else 10.0)
         boards_to_limit = max(0, int(margin_100 / board_cap_pct))
@@ -514,11 +476,9 @@ class JudgmentChainRunner:
         else:
             reg_status_str = "距严重异常波动监管红线(10日100%)余量充沛"
 
-        # 决策三元组与行动档位映射: [状态后验 | 赔率 | 路径可承受性]
         life_line = round(price * 0.98, 2)
         stop_line = round(min(support_lvl, price * 0.96), 2)
 
-        # 封顶规则: 致命红旗一票否决
         if is_fatal:
             decision_gear = "回避"
             decision_title = "【🚫 铁律回避】"
@@ -622,7 +582,234 @@ class JudgmentChainRunner:
             if mf_override in ("回避", "观察"):
                 position_cap = 0.0
 
-        # 四维博弈雷达与实操剧本生成
+        return decision_gear, decision_title, position_cap, core_contra, action_tactic, invalidation, reg_status_str
+
+    def _assemble_and_lint_card(
+        self,
+        base_info: dict[str, Any],
+        dash_and_pillars: dict[str, Any],
+        decision_info: dict[str, Any],
+        flags: list[RedFlagItem],
+    ) -> dict[str, Any]:
+        """聚合全维决断卡并执行 Lint 质量硬核机检门控。"""
+        card = {**base_info, **dash_and_pillars, **decision_info}
+
+        # 机检校验与封顶硬锁死 (R8: 严格门控，非致命失败亦必须降级观察并清零仓位)
+        ok, findings = self.validator.validate(card, flags)
+        card["lint_ok"] = ok
+        card["lint_findings"] = findings
+        if not ok:
+            logger.warning(f"决断卡未通过 Lint 质量机检: {findings}")
+            if has_fatal_red_flags(flags):
+                card["decision_gear"] = "回避"
+                card["decision_title"] = "【🚫 致命排雷一票否决 (强制回避)】"
+                card["position_cap"] = 0.0
+            else:
+                card["decision_gear"] = "等证据临界(观察)"
+                card["decision_title"] = "【⚠️ 机检门控未通过 (强制观察)】"
+                card["position_cap"] = 0.0
+            card["pillar_5_decision"]["decision_gear"] = card["decision_gear"]
+            card["pillar_5_decision"]["decision_title"] = card["decision_title"]
+            card["pillar_5_decision"]["position_cap"] = card["position_cap"]
+            card["pillar_5_decision"]["action_tactic"] = (
+                f"• 机检拦截告警: 未通过 Lint 质量机检 ({'; '.join(findings)})，强制锁定零仓位观察防御！\n"
+                + card["pillar_5_decision"].get("action_tactic", "")
+            )
+            card["pillar_5_decision"]["three_part_conclusion"] = (
+                f"好公司? 【{'是' if '好' in card.get('quality_verdict', '') else '否/存疑'}】 · "
+                f"好下注? 【{'是' if card['position_cap'] > 0 else '否'}】 · "
+                f"好价格? 【{'是' if '便宜' in card.get('odds_verdict', '') or '合理' in card.get('odds_verdict', '') else '否'}】 (机检未通过)"
+            )
+
+        return card
+
+    # =========================================================================
+    # 主流程编排器 (run) 降至 ~120 行高内聚装配
+    # =========================================================================
+
+    def run(
+        self,
+        ticker: str,
+        name: str,
+        trade_date: str,
+        quote: dict[str, Any],
+        momentum: dict[str, Any],
+        flags: list[RedFlagItem],
+        matched_youzi: list[dict[str, Any]],
+        trap_warnings: list[str],
+        matched_personas: list[dict[str, Any]] | None = None,
+        concepts: list[str] | None = None,
+        ladder_info: dict[str, Any] | None = None,
+        sentiment_overview: Any | None = None,
+        money_flow: dict[str, Any] | None = None,
+        lhb_records: list[dict[str, Any]] | None = None,
+        governance_info: dict[str, Any] | None = None,
+        microstructure: dict[str, Any] | None = None,
+        daily_df: Any | None = None,
+        financial_reports: dict[str, Any] | None = None,
+        data_health: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """合成兼具 Ashare 深度投研严谨性与 A 股盘口微观实战性的全维决断卡。"""
+        price = quote.get("close", 0.0)
+        pct_chg = quote.get("pct_chg", 0.0)
+        turnover = quote.get("turnover_ratio", 0.0)
+        total_mv = quote.get("total_mv", 0.0)
+        circ_mv = quote.get("circ_mv", 0.0)
+        pe_val = quote.get("pe", 0.0)
+        pb_val = quote.get("pb", 0.0)
+        total_shares_yi = (
+            quote.get("total_share", 0.0)
+            or ((quote.get("total_mv") or quote.get("circ_mv") or 1e8) / price if price > 0 else 1e8)
+        ) / 1e8
+        if total_shares_yi <= 0:
+            total_shares_yi = 1.0
+
+        ma5 = momentum.get("ma5", price)
+        ma20 = momentum.get("ma20", price)
+        overhead_chips = momentum.get("overhead_chip_pct", 0.0)
+        support_lvl = momentum.get("support_level", round(price * 0.95, 2))
+        resistance_lvl = momentum.get("resistance_level", round(price * 1.05, 2))
+        concept_list = concepts or []
+
+        is_gem_star = ticker.startswith(("300", "301", "688"))
+        is_bse = ticker.startswith(("8", "4", "920"))
+        board_name = "双创板 (20%涨跌停)" if is_gem_star else ("北交所 (30%涨跌停)" if is_bse else "主板 (10%涨跌停)")
+        stock_track, track_name = self.classify_stock_track(quote, ladder_info, concept_list)
+
+        ret_10d = 0.0
+        if daily_df is not None and hasattr(daily_df, "empty") and not daily_df.empty and len(daily_df) >= 2:
+            closes_asc = daily_df.iloc[::-1]["close"].reset_index(drop=True)
+            c_latest = float(closes_asc.iloc[-1])
+            c_10_ago = float(closes_asc.iloc[-min(10, len(closes_asc))])
+            if c_10_ago > 0:
+                ret_10d = round((c_latest - c_10_ago) / c_10_ago * 100.0, 1)
+
+        fatal_flags = [f for f in flags if f.level == LEVEL_FATAL]
+        is_fatal = len(fatal_flags) > 0
+
+        is_market_ice = False
+        p_gate = "未接入大盘连板情绪"
+        macro_res = getattr(sentiment_overview, "macro_regime_result", None) if sentiment_overview else None
+        if macro_res is not None:
+            is_market_ice = not macro_res.is_gate_open
+            p_gate = macro_res.gate_description
+        elif sentiment_overview is not None:
+            phase = getattr(sentiment_overview, "sentiment_phase", "未知")
+            space = getattr(sentiment_overview, "space_board_level", 0)
+            tickers = "、".join(getattr(sentiment_overview, "space_board_tickers", [])[:2]) or "无"
+            zt_count = getattr(sentiment_overview, "total_limit_up_count", 0)
+            dt_count = getattr(sentiment_overview, "total_limit_down_count", 0)
+            bk_count = getattr(sentiment_overview, "total_broken_count", 0)
+            bk_rate = getattr(sentiment_overview, "broken_rate_pct", 0.0)
+            stats_str = f"涨停 {zt_count}家 / 跌停 {dt_count}家 / 炸板 {bk_count}家 (炸板率 {bk_rate:.1f}%)"
+            if dt_count >= 15 or bk_rate >= 35.0 or phase in ("混沌冰点期", "退潮分歧期", "高位分歧期"):
+                is_market_ice = True
+                p_gate = f"⚠️ 情绪闸门收紧 (市场处于【{phase}】，空间板 {space}板 [{tickers}]，{stats_str}，后排亏钱效应扩散，短线防守控仓)"
+            else:
+                p_gate = f"✓ 情绪闸门放行 (市场处于【{phase}】，空间板 {space}板 [{tickers}]，{stats_str}，短线情绪具备赚钱效应)"
+
+        # 0. 数据看板计算
+        f_rep = financial_reports or {"income": pd.DataFrame(), "balance": pd.DataFrame(), "cashflow": pd.DataFrame()}
+        mainbz_list = (governance_info or {}).get("main_business", [])
+        derived_data = self.derived_calc.compute_metrics(
+            income_df=f_rep.get("income", pd.DataFrame()),
+            balance_df=f_rep.get("balance", pd.DataFrame()),
+            cashflow_df=f_rep.get("cashflow", pd.DataFrame()),
+            quote=quote,
+            mainbz=mainbz_list,
+        )
+        dashboard = self.derived_calc.build_profitability_dashboard(derived_data, industry_name=track_name)
+
+        # 1. 支柱 ❶ 质地
+        p1_summary, quality_verdict, sub_verdicts_quality = self._build_pillar_1_quality(
+            derived_data=derived_data,
+            flags=flags,
+            governance_info=governance_info,
+            concept_list=concept_list,
+            is_fatal=is_fatal,
+            fatal_flags=fatal_flags,
+            data_health=data_health,
+        )
+
+        # 2. 支柱 ❷ 状态
+        p2_summary, state_verdict, critical_wait, is_tech = self._build_pillar_2_state(
+            derived_data=derived_data,
+            concept_list=concept_list,
+            ladder_info=ladder_info,
+            mainbz_list=mainbz_list,
+        )
+
+        # 3. 支柱 ❸ 赔率
+        p3_summary, odds_verdict, sotp_ps, dcf_ps, deriv, anchor, rdcf, ni_is_verified = self._build_pillar_3_odds(
+            price=price,
+            total_shares_yi=total_shares_yi,
+            pe_val=pe_val,
+            total_mv=total_mv,
+            derived_data=derived_data,
+            is_tech=is_tech,
+            mainbz_list=mainbz_list,
+        )
+
+        # 4. 支柱 ❹ 路径
+        (
+            p4_summary,
+            path_verdict,
+            is_micro_degraded,
+            mf_stage_code,
+            mf_stage,
+            mf_behavior,
+            mf_override,
+            mf_cap,
+            mf_conf,
+            is_trans,
+            depth_to_sotp,
+            profit_chip_pct,
+        ) = self._build_pillar_4_path(
+            price=price,
+            overhead_chips=overhead_chips,
+            sotp_ps=sotp_ps,
+            microstructure=microstructure,
+            is_fatal=is_fatal,
+        )
+
+        # 5. 支柱 ❺ 决断与战术
+        (
+            decision_gear,
+            decision_title,
+            position_cap,
+            core_contra,
+            action_tactic,
+            invalidation,
+            reg_status_str,
+        ) = self._decide_gear(
+            price=price,
+            state_verdict=state_verdict,
+            odds_verdict=odds_verdict,
+            path_verdict=path_verdict,
+            quality_verdict=quality_verdict,
+            is_fatal=is_fatal,
+            is_market_ice=is_market_ice,
+            stock_track=stock_track,
+            macro_res=macro_res,
+            mf_stage_code=mf_stage_code,
+            mf_override=mf_override,
+            is_micro_degraded=is_micro_degraded,
+            mf_cap=mf_cap,
+            ni_is_verified=ni_is_verified,
+            fatal_flags=fatal_flags,
+            ladder_info=ladder_info,
+            ret_10d=ret_10d,
+            is_gem_star=is_gem_star,
+            is_bse=is_bse,
+            overhead_chips=overhead_chips,
+            sotp_ps=sotp_ps,
+            ma5=ma5,
+            ma20=ma20,
+            support_lvl=support_lvl,
+            resistance_lvl=resistance_lvl,
+            critical_wait=critical_wait,
+        )
+
         persona_names = [p.get("youzi_name", "") for p in (matched_personas or []) if isinstance(p, dict)]
         capital_matrix = self.matrix_radar.evaluate(
             quote=quote,
@@ -637,13 +824,7 @@ class JudgmentChainRunner:
             governance_info=governance_info,
         )
 
-        # 消除 C2 档位映射自相矛盾: position_cap > 0 统统映射为 BUY 战术; 0 仓位严格根据回避/减仓分流
-        if position_cap > 0.0:
-            act_key = "BUY"
-        elif "回避" in decision_gear or "减仓" in decision_gear:
-            act_key = "AVOID"
-        else:
-            act_key = "WAIT"
+        act_key = "BUY" if position_cap > 0.0 else ("AVOID" if ("回避" in decision_gear or "减仓" in decision_gear) else "WAIT")
         playbook = self.playbook_builder.build(
             quote=quote,
             momentum=momentum,
@@ -653,7 +834,7 @@ class JudgmentChainRunner:
             fatal_flag=is_fatal,
         )
 
-        card = {
+        base_info = {
             "ticker": ticker,
             "name": name,
             "trade_date": trade_date,
@@ -667,13 +848,14 @@ class JudgmentChainRunner:
             "board_name": board_name,
             "stock_track": stock_track,
             "track_name": track_name,
-            # 首页「赚不赚钱」数据看板
+            "data_health": data_health or {},
+        }
+        dash_and_pillars = {
             "profitability_dashboard": dashboard,
-            # 五大核心支柱 (严格按新版买方框架)
-            "pillar_1_quality": pillar_quality_summary,
-            "pillar_2_state": pillar_state_summary,
-            "pillar_3_odds": pillar_odds_summary,
-            "pillar_4_path": pillar_path_summary,
+            "pillar_1_quality": p1_summary,
+            "pillar_2_state": p2_summary,
+            "pillar_3_odds": p3_summary,
+            "pillar_4_path": p4_summary,
             "pillar_5_decision": {
                 "decision_gear": decision_gear,
                 "decision_title": decision_title,
@@ -685,16 +867,17 @@ class JudgmentChainRunner:
                 "regulatory_status": reg_status_str,
                 "invalidation_line": invalidation,
             },
-            # 兼容字段 (清晰别名)
             "pillar_gate": p_gate,
-            "pillar_business": pillar_state_summary,
-            "pillar_state": pillar_state_summary,
-            "pillar_tape": pillar_odds_summary,
-            "pillar_odds": pillar_odds_summary,
-            "pillar_flow": pillar_path_summary,
-            "pillar_path": pillar_path_summary,
-            "pillar_audit": pillar_quality_summary,
-            "pillar_quality": pillar_quality_summary,
+            "pillar_business": p2_summary,
+            "pillar_state": p2_summary,
+            "pillar_tape": p3_summary,
+            "pillar_odds": p3_summary,
+            "pillar_flow": p4_summary,
+            "pillar_path": p4_summary,
+            "pillar_audit": p1_summary,
+            "pillar_quality": p1_summary,
+        }
+        decision_info = {
             "decision_gear": decision_gear,
             "decision_title": decision_title,
             "position_cap": position_cap,
@@ -718,32 +901,11 @@ class JudgmentChainRunner:
             "matched_personas": matched_personas or [],
             "trap_warnings": trap_warnings,
             "ladder_info": ladder_info,
-            "microstructure": micro,
+            "microstructure": microstructure or {},
             "main_force_stage": mf_stage,
             "main_force_behavior": mf_behavior,
             "main_force_confidence": mf_conf,
             "is_transitional": is_trans,
-            "data_health": data_health or {},
         }
 
-        # 机检校验与封顶硬锁死 (R8: 严格门控，非致命失败亦必须降级观察并清零仓位)
-        ok, findings = self.validator.validate(card, flags)
-        card["lint_ok"] = ok
-        card["lint_findings"] = findings
-        if not ok:
-            logger.warning(f"决断卡未通过 Lint 质量机检: {findings}")
-            if has_fatal_red_flags(flags):
-                card["decision_gear"] = "回避"
-                card["position_cap"] = 0.0
-            else:
-                card["decision_gear"] = "等证据临界(观察)"
-                card["position_cap"] = 0.0
-            card["pillar_5_decision"]["decision_gear"] = card["decision_gear"]
-            card["pillar_5_decision"]["position_cap"] = card["position_cap"]
-            card["pillar_5_decision"]["three_part_conclusion"] = (
-                f"好公司? 【{'是' if '好' in quality_verdict else '否/存疑'}】 · "
-                f"好下注? 【{'是' if card['position_cap'] > 0 else '否'}】 · "
-                f"好价格? 【{'是' if '便宜' in odds_verdict or '合理' in odds_verdict else '否'}】"
-            )
-
-        return card
+        return self._assemble_and_lint_card(base_info, dash_and_pillars, decision_info, flags)

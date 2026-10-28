@@ -243,18 +243,9 @@ class EltdxCollector:
             logger.warning(f"获取资金流异常: {e}")
             return {"main_net_wan": 0.0, "main_ratio": 0.0, "super_large_net_wan": 0.0, "large_net_wan": 0.0}
 
-    def get_microstructure(
-        self,
-        code_str: str,
-        current_price: float = 0.0,
-        daily_df: pd.DataFrame | None = None,
-        momentum: dict[str, Any] | None = None,
-        ladder_info: dict[str, Any] | None = None,
-        float_share: float = 0.0,
-        quote: dict[str, Any] | None = None,
-    ) -> dict[str, Any]:
-        """获取高频微观结构、知情交易与主力生命周期分析 (开源金工聪明钱 Q、时段切割与换手沉淀)."""
-        eltdx_code, ts_code = normalize_code(code_str)
+    def get_microstructure_raw_data(self, code_str: str) -> tuple[list[Any], Any]:
+        """纯粹底层数据接口：获取 5分钟高频 K线与早盘集合竞价切片，零领域业务依赖。"""
+        eltdx_code, _ = normalize_code(code_str)
 
         def _fetch():
             with open_client() as c:
@@ -271,15 +262,33 @@ class EltdxCollector:
                     logger.warning(f"auction_data 获取失败: {e_ad}")
                 return getattr(bars_resp, "bars", []) or [], ad_resp
 
-        try:
-            bars, ad = with_retry(_fetch, what=f"高频微观结构({eltdx_code})")
-            if bars:
-                self.health.record_success("5分钟高频分时K线", "eltdx.bars.get(5min)", len(bars))
-            else:
-                self.health.record_empty("5分钟高频分时K线", "eltdx.bars.get(5min)", "无5分钟K线记录")
+        bars, ad = with_retry(_fetch, what=f"高频微观结构({eltdx_code})")
+        if bars:
+            self.health.record_success("5分钟高频分时K线", "eltdx.bars.get(5min)", len(bars))
+        else:
+            self.health.record_empty("5分钟高频分时K线", "eltdx.bars.get(5min)", "无5分钟K线记录")
+        return bars, ad
 
-            from core.microstructure import MicrostructureAnalyzer
-            analyzer = MicrostructureAnalyzer()
+    def get_microstructure(
+        self,
+        code_str: str,
+        current_price: float = 0.0,
+        daily_df: pd.DataFrame | None = None,
+        momentum: dict[str, Any] | None = None,
+        ladder_info: dict[str, Any] | None = None,
+        float_share: float = 0.0,
+        quote: dict[str, Any] | None = None,
+        analyzer: Any | None = None,
+    ) -> dict[str, Any]:
+        """获取高频微观结构、知情交易与主力生命周期分析 (开源金工聪明钱 Q、时段切割与换手沉淀). 支持依赖注入 analyzer。"""
+        eltdx_code, ts_code = normalize_code(code_str)
+
+        try:
+            bars, ad = self.get_microstructure_raw_data(code_str)
+
+            if analyzer is None:
+                from core.microstructure import MicrostructureAnalyzer
+                analyzer = MicrostructureAnalyzer()
             prof = analyzer.analyze(
                 bars,
                 auction_data=ad,

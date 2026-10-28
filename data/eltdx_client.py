@@ -12,6 +12,8 @@ from typing import Any
 from eltdx import TdxClient
 from eltdx.exceptions import EltdxError, ProtocolError, ResourceFormatError, TransportError
 
+import config
+
 logger = logging.getLogger("ast_trader.data.client")
 
 
@@ -67,14 +69,27 @@ def normalize_code(code_str: str) -> tuple[str, str]:
 
 
 @contextmanager
-def open_client(timeout: float = 6.0) -> Iterator[TdxClient]:
-    """打开一个 TdxClient 连接，并在退出时自动关闭。"""
-    client = TdxClient(timeout=timeout)
+def open_client(timeout: float = 6.0, host: str | None = None, port: int | None = None) -> Iterator[TdxClient]:
+    """打开一个 TdxClient 连接，并在退出时自动关闭。优先选用 DEFAULT_TDX_HOSTS 节点池。"""
+    client = None
+    if host and port:
+        client = TdxClient(host=host, port=port, timeout=timeout)
+    else:
+        hosts = getattr(config, "DEFAULT_TDX_HOSTS", [])
+        if hosts:
+            h, p = hosts[0]
+            try:
+                client = TdxClient(host=h, port=p, timeout=timeout)
+            except Exception:
+                client = TdxClient(timeout=timeout)
+        else:
+            client = TdxClient(timeout=timeout)
     try:
         yield client
     finally:
         try:
-            client.close()
+            if client:
+                client.close()
         except Exception as e:
             logger.debug("Client close exception (safe to ignore): %s", e)
 
