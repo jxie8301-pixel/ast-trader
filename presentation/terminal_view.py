@@ -144,6 +144,15 @@ def print_decision_card(card: dict[str, Any]) -> None:
         body_lines.append("[dim]─" * 78 + "[/dim]")
         body_lines.append("\n".join(dh_lines))
 
+    # 5. Lint 质量门控异常检视
+    lint_findings = card.get("lint_findings") or []
+    if lint_findings:
+        lint_lines = [f"[bold red]🛡️ Lint 质量门控机检拦截警示 ({len(lint_findings)} 项):[/bold red]"]
+        for item in lint_findings:
+            lint_lines.append(f"  • [red]{item}[/red]")
+        body_lines.append("[dim]─" * 78 + "[/dim]")
+        body_lines.append("\n".join(lint_lines))
+
     panel = Panel(
         "\n\n".join([body_lines[0], body_lines[1]]) + "\n" + "\n\n".join(body_lines[2:]),
         title=f"🎯 [bold yellow]AST-Trader A股买方投研决断卡 (深度版)[/bold yellow]",

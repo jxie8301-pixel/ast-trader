@@ -3,10 +3,13 @@ Strictly aligned with Ashare-researchreport/scripts/lint_v8.py.
 """
 from __future__ import annotations
 
+import logging
 import re
 from typing import Any
 
 from core.red_flags import LEVEL_FATAL, RedFlagItem
+
+logger = logging.getLogger("ast_trader.lint")
 
 
 class LintError(ValueError):
@@ -14,7 +17,7 @@ class LintError(ValueError):
 
 
 class LintValidator:
-    """质量门控校验器 (全面对齐 Ashare-researchreport/scripts/lint_v8.py)。"""
+    """质量门控校验器 (全面对齐 Ashare-researchreport/scripts/lint_v8.py)."""
 
     # R9 无记忆性反例关键词库 (禁把"跌多了该涨/估值压久了该修复"当买入逻辑)
     FORBIDDEN_MEMORYLESS_PHRASES = (
@@ -35,10 +38,10 @@ class LintValidator:
         findings = []
 
         fatal_flags = [f for f in flags if f.level == LEVEL_FATAL]
-        gear = decision_card.get("decision_gear")
-        pos = decision_card.get("position_cap", 0.0)
+        gear = str(decision_card.get("decision_gear") or "")
+        pos = float(decision_card.get("position_cap", 0.0) or 0.0)
 
-        # ─── R7: 决策字段齐全 + 封顶 ───
+        # ─── R7: 决策字段齐全 + 致命红旗强制封顶 ───
         if fatal_flags and gear != "回避":
             findings.append(
                 f"[R7 致命红旗未回避] 存在 {len(fatal_flags)} 条 🔴 致命红旗 "
@@ -51,16 +54,30 @@ class LintValidator:
                 f"[R7 致命红旗仓位未清零] 存在致命红旗时，单票仓位上限必须为 0.0，实际给出了 {pos*100:.1f}%！"
             )
 
-        # ─── R8: 越权发声 (仓位/行动档位只能出现在⑤决策) ───
-        for node_key, label in [("quality_verdict", "①质地"), ("state_verdict", "②状态"), ("odds_verdict", "③赔率")]:
-            text = str(decision_card.get(node_key, ""))
-            if any(term in text for term in ["建议买入", "建仓", "满仓", "半仓", "清仓", "加仓"]):
-                findings.append(f"[R8 越权发声] {label} 正文包含行动/仓位买卖指令，违背职责分离原则！")
+        # ─── R8: 越权发声检查 (仓位/买卖指令只能出现在⑤决策中，严禁在支柱①~④正文中越权出现) ───
+        nodes_to_check = [
+            ("pillar_1_quality", "①质地正文"),
+            ("pillar_2_state", "②状态正文"),
+            ("pillar_3_odds", "③赔率正文"),
+            ("pillar_4_path", "④路径正文"),
+            ("quality_verdict", "①质地判定"),
+            ("state_verdict", "②状态判定"),
+            ("odds_verdict", "③赔率判定"),
+            ("path_verdict", "④路径判定"),
+        ]
+        action_forbidden_terms = ["建议买入", "立即买入", "建议建仓", "立即建仓", "开始建仓", "满仓", "半仓", "清仓离场", "立即清仓", "逢低加仓", "建议加仓"]
+        for node_key, label in nodes_to_check:
+            text = str(decision_card.get(node_key, "") or "")
+            for term in action_forbidden_terms:
+                if term in text:
+                    findings.append(f"[R8 越权发声] {label} 包含行动/买卖指令 '{term}'，违背职责分离原则！")
+                    break
 
         # ─── R9: 无记忆性反例 ───
         all_text = " ".join(str(v) for v in decision_card.values())
+        is_buy_gear = any(k in gear for k in ["买入", "做多", "核心", "期权仓"])
         for phrase in self.FORBIDDEN_MEMORYLESS_PHRASES:
-            if phrase in all_text and gear == "买入":
+            if phrase in all_text and is_buy_gear:
                 findings.append(f"[R9 无记忆性反例] 出现禁止的反例推论 '{phrase}'，严禁作为买入依据！")
 
         # ─── R13: 证伪清单同源 ───

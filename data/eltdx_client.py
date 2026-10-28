@@ -130,3 +130,11 @@ def with_retry(
             else:
                 raise
     raise last_err if last_err else RuntimeError(f"{what} 重试已耗尽")
+
+
+def log_fail(msg: str, exc: Exception | None = None) -> None:
+    """记录客户端或下层模块失败日志，防止上层 AttributeError。"""
+    if exc is not None:
+        logger.error(f"{msg}: {type(exc).__name__}: {exc}", exc_info=True)
+    else:
+        logger.error(msg)

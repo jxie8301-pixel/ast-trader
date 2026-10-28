@@ -40,9 +40,11 @@ def rank_composite(
             mf = collector.get_money_flow(code_num)
             c["main_net_wan"] = mf.get("main_net_wan", 0.0)
             c["main_ratio"] = mf.get("main_ratio", 0.0)
-        except Exception:
-            c["main_net_wan"] = round(seal_amt / 10000.0, 1) if seal_amt else 0.0
-            c["main_ratio"] = 0.0
+        except Exception as e:
+            logger.debug(f"获取主力资金流异常 {code_num}: {e}")
+            c["main_net_wan"] = None
+            c["main_ratio"] = None
+            c["money_flow_degraded"] = True
 
         close_val = real_quote.get("close", c.get("close", 0.0))
         pct_val = real_quote.get("pct_chg", pct_chg)
@@ -90,12 +92,12 @@ def rank_composite(
         matched_personas = evaluate_youzi_personas(tape_features)
         c["matched_personas"] = matched_personas
 
-        # 4. UZI 四态决策状态流转 (ranker.py lines 79-88)
+        # 4. UZI 四态决策状态流转 (使用实时 pct_val 保证数据时效一致性)
         leader = bl >= 2
-        if pct_chg >= 7.0 and not leader:
+        if pct_val >= 7.0 and not leader:
             action = "wait_pullback"
             action_desc = "等待回踩确认 (短时涨幅偏大，追高风险高)"
-        elif leader and pct_chg >= 3.0 and matched_personas:
+        elif leader and pct_val >= 3.0 and matched_personas:
             action = "buyable"
             action_desc = "主升进场/回踩低吸"
         elif leader:
@@ -109,7 +111,7 @@ def rank_composite(
         c["action_desc"] = action_desc
 
         # 构建实盘执行剧本战术卡 (Execution Playbook)
-        act_key = "BUY" if action == "buyable" else ("WAIT" if action in ("wait_pullback", "wait_reseal") else "WAIT")
+        act_key = "BUY" if action == "buyable" else "WAIT"
         pb = playbook_builder.build(
             quote=real_quote or {"close": close_val, "pre_close": close_val},
             momentum={"support_level": round(close_val * 0.95, 2), "resistance_level": round(close_val * 1.05, 2)},

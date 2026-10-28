@@ -43,6 +43,18 @@ def render_decision_card_html(card: dict[str, Any], output_path: str | None = No
     pct_color = "#ef4444" if pct_chg > 0 else ("#10b981" if pct_chg < 0 else "#94a3b8")
     pct_sign = "+" if pct_chg > 0 else ""
 
+    # Lint 门控机检展示
+    lint_findings = card.get("lint_findings") or []
+    lint_banner_html = ""
+    if lint_findings:
+        lint_items = "".join(f"<li>{html.escape(str(item))}</li>" for item in lint_findings)
+        lint_banner_html = f"""
+        <div style="background: rgba(239, 68, 68, 0.15); border: 1px solid #dc2626; border-radius: 8px; padding: 12px 16px; margin-bottom: 20px;">
+            <div style="color: #f87171; font-weight: bold; margin-bottom: 6px;">🛡️ Lint 质量门控机检拦截发现 {len(lint_findings)} 项异常:</div>
+            <ul style="color: #fca5a5; font-size: 13px; margin-left: 20px;">{lint_items}</ul>
+        </div>
+        """
+
     # 红旗列表渲染
     risk_rows = ""
     for idx, r in enumerate(all_flags, 1):
@@ -363,6 +375,7 @@ def render_decision_card_html(card: dict[str, Any], output_path: str | None = No
 </head>
 <body>
     <div class="container">
+        {lint_banner_html}
         <!-- 头部概览 -->
         <header class="header">
             <div>

@@ -129,10 +129,14 @@ class AuditEngine:
         score += int(ok_ni)
         details.append(f"NI>0={'✓' if ok_ni else '✗'}")
 
-        # 2. ROA > 0
-        ta_now = _safe_float(bs_now.get("total_assets")) or 1.0
-        roa = ni / ta_now if ta_now else 0.0
-        ok_roa = roa > 0
+        # 2. ROA > 0 (资产缺失严禁假定 ta=1.0)
+        ta_now = _safe_float(bs_now.get("total_assets"))
+        if ta_now and ta_now > 0:
+            roa = ni / ta_now
+            ok_roa = roa > 0
+        else:
+            roa = None
+            ok_roa = False
         score += int(ok_roa)
         details.append(f"ROA>0={'✓' if ok_roa else '✗'}")
 
@@ -149,47 +153,62 @@ class AuditEngine:
 
         # 5. ROA 同比上升
         ni_prev = _safe_float(y_prev.get("n_income_attr_p")) or _safe_float(y_prev.get("n_income")) or 0.0
-        ta_prev = _safe_float(bs_prev.get("total_assets")) or 1.0
-        roa_prev = ni_prev / ta_prev if ta_prev else 0.0
-        ok_roa_up = roa > roa_prev
+        ta_prev = _safe_float(bs_prev.get("total_assets"))
+        if roa is not None and ta_prev and ta_prev > 0:
+            roa_prev = ni_prev / ta_prev
+            ok_roa_up = roa > roa_prev
+        else:
+            ok_roa_up = False
         score += int(ok_roa_up)
         details.append(f"ROA↑={'✓' if ok_roa_up else '✗'}")
 
         # 6. 资产负债率同比下降
-        tl_now = _safe_float(bs_now.get("total_liab")) or 0.0
-        tl_prev = _safe_float(bs_prev.get("total_liab")) or 0.0
-        dta_now = tl_now / ta_now if ta_now else 1.0
-        dta_prev = tl_prev / ta_prev if ta_prev else 1.0
-        ok_lev_down = dta_now < dta_prev
+        tl_now = _safe_float(bs_now.get("total_liab"))
+        tl_prev = _safe_float(bs_prev.get("total_liab"))
+        if ta_now and ta_now > 0 and ta_prev and ta_prev > 0 and tl_now is not None and tl_prev is not None:
+            dta_now = tl_now / ta_now
+            dta_prev = tl_prev / ta_prev
+            ok_lev_down = dta_now < dta_prev
+        else:
+            ok_lev_down = False
         score += int(ok_lev_down)
         details.append(f"负债率↓={'✓' if ok_lev_down else '✗'}")
 
         # 7. 流动比率同比上升
-        tca_now = _safe_float(bs_now.get("total_cur_assets")) or 0.0
-        tcl_now = _safe_float(bs_now.get("total_cur_liab")) or 1.0
-        tca_prev = _safe_float(bs_prev.get("total_cur_assets")) or 0.0
-        tcl_prev = _safe_float(bs_prev.get("total_cur_liab")) or 1.0
-        cr_now = tca_now / max(tcl_now, 1.0)
-        cr_prev = tca_prev / max(tcl_prev, 1.0)
-        ok_cr_up = cr_now > cr_prev
+        tca_now = _safe_float(bs_now.get("total_cur_assets"))
+        tcl_now = _safe_float(bs_now.get("total_cur_liab"))
+        tca_prev = _safe_float(bs_prev.get("total_cur_assets"))
+        tcl_prev = _safe_float(bs_prev.get("total_cur_liab"))
+        if tca_now is not None and tcl_now and tcl_now > 0 and tca_prev is not None and tcl_prev and tcl_prev > 0:
+            cr_now = tca_now / tcl_now
+            cr_prev = tca_prev / tcl_prev
+            ok_cr_up = cr_now > cr_prev
+        else:
+            ok_cr_up = False
         score += int(ok_cr_up)
         details.append(f"流动比率↑={'✓' if ok_cr_up else '✗'}")
 
-        # 8. 毛利率同比上升
-        rev_now = _safe_float(y_now.get("revenue")) or 1.0
-        rev_prev = _safe_float(y_prev.get("revenue")) or 1.0
-        cos_now = _safe_float(y_now.get("oper_cost")) or 0.0
-        cos_prev = _safe_float(y_prev.get("oper_cost")) or 0.0
-        gm_now = (rev_now - cos_now) / rev_now if rev_now else 0.0
-        gm_prev = (rev_prev - cos_prev) / rev_prev if rev_prev else 0.0
-        ok_gm_up = gm_now > gm_prev
+        # 8. 毛利率同比上升 (营收缺失严禁假定 rev=1.0)
+        rev_now = _safe_float(y_now.get("revenue"))
+        rev_prev = _safe_float(y_prev.get("revenue"))
+        cos_now = _safe_float(y_now.get("oper_cost"))
+        cos_prev = _safe_float(y_prev.get("oper_cost"))
+        if rev_now and rev_now > 0 and rev_prev and rev_prev > 0 and cos_now is not None and cos_prev is not None:
+            gm_now = (rev_now - cos_now) / rev_now
+            gm_prev = (rev_prev - cos_prev) / rev_prev
+            ok_gm_up = gm_now > gm_prev
+        else:
+            ok_gm_up = False
         score += int(ok_gm_up)
         details.append(f"毛利率↑={'✓' if ok_gm_up else '✗'}")
 
         # 9. 资产周转率同比上升
-        at_now = rev_now / ta_now if ta_now else 0.0
-        at_prev = rev_prev / ta_prev if ta_prev else 0.0
-        ok_at_up = at_now > at_prev
+        if rev_now and rev_prev and ta_now and ta_prev and ta_now > 0 and ta_prev > 0:
+            at_now = rev_now / ta_now
+            at_prev = rev_prev / ta_prev
+            ok_at_up = at_now > at_prev
+        else:
+            ok_at_up = False
         score += int(ok_at_up)
         details.append(f"周转率↑={'✓' if ok_at_up else '✗'}")
 

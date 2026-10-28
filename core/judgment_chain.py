@@ -9,8 +9,11 @@ Strictly absorbing Ashare-researchreport core methodology:
 """
 from __future__ import annotations
 
+import logging
 from typing import Any
 import pandas as pd
+
+logger = logging.getLogger("ast_trader.core.judgment_chain")
 
 import config
 from core.capital_matrix import CapitalMatrixRadar
@@ -172,45 +175,60 @@ class JudgmentChainRunner:
         cf_m = derived_data.get("cashflow", {})
         vit_m = derived_data.get("latest_vitals", {})
 
-        gm_val = prof_m.get("gross_margin_latest", 28.5)
-        nm_val = prof_m.get("net_margin_latest", 8.2)
-        c_ratio = prof_m.get("cash_content_latest", 1.05)
-        roe_val = prof_m.get("roe_latest", 9.8)
-        inv_ratio = vit_m.get("invest_income_ratio", 0.0)
-        debt_ratio = prof_m.get("debt_to_assets", 42.0)
+        gm_val = prof_m.get("gross_margin_latest")
+        nm_val = prof_m.get("net_margin_latest")
+        c_ratio = cf_m.get("cash_content_latest") if cf_m.get("cash_content_latest") is not None else prof_m.get("cash_content_latest")
+        roe_val = prof_m.get("roe_latest")
+        inv_ratio = vit_m.get("invest_income_ratio")
+        debt_ratio = prof_m.get("debt_to_assets")
         pledge_ratio = float((governance_info or {}).get("pledge_ratio", 0.0) or 0.0)
         has_reduction = bool((governance_info or {}).get("has_reduction_plan", False))
 
-        # 五个子判定表 (严格三态 ✓ / ⚠️ / ✗)
+        # 五个子判定表 (严格三态 ✓ / ⚠️ / ✗，严禁以伪造默认值充数)
         # Q1: 生意模式赚钱吗
-        j_biz = "✓" if gm_val >= 30.0 and nm_val >= 8.0 else ("⚠️" if gm_val >= 18.0 else "✗")
-        ev_biz = f"毛利率 {gm_val:.1f}% / 净利率 {nm_val:.1f}% (行业标杆分位良好，具备一定向下游转嫁定价权)" if j_biz == "✓" else (
-            f"毛利率 {gm_val:.1f}% / 净利率 {nm_val:.1f}% (赚辛苦钱，议价权中等)" if j_biz == "⚠️" else
-            f"毛利率 {gm_val:.1f}% / 净利率 {nm_val:.1f}% (红海恶性价格战，薄利甚至亏损)"
-        )
+        if gm_val is None or nm_val is None:
+            j_biz = "⚠️"
+            ev_biz = "毛利率/净利率财务数据缺失或未披露，主营生意盈利能力暂无法核验"
+        else:
+            j_biz = "✓" if gm_val >= 30.0 and nm_val >= 8.0 else ("⚠️" if gm_val >= 18.0 else "✗")
+            ev_biz = f"毛利率 {gm_val:.1f}% / 净利率 {nm_val:.1f}% (行业标杆分位良好，具备一定向下游转嫁定价权)" if j_biz == "✓" else (
+                f"毛利率 {gm_val:.1f}% / 净利率 {nm_val:.1f}% (赚辛苦钱，议价权中等)" if j_biz == "⚠️" else
+                f"毛利率 {gm_val:.1f}% / 净利率 {nm_val:.1f}% (红海恶性价格战，薄利甚至亏损)"
+            )
 
         # Q2: 赚钱质量真吗
-        j_quality = "✓" if (c_ratio >= 0.8 and inv_ratio < 25.0) else ("⚠️" if (c_ratio >= 0.5 and inv_ratio < 50.0) else "✗")
-        if inv_ratio >= 50.0:
-            ev_quality = f"投资收益占营业利润高达 {inv_ratio:.1f}% (纸面利润严重依赖非主营收益，主营现金流偏弱 OCF/NI={c_ratio:.2f}x)"
-        elif c_ratio < 0.5:
-            ev_quality = f"现金含量仅 {c_ratio:.2f}x (营收未能有效转化为真金白银现金流，存在应收账款滞压风险)"
+        if c_ratio is None:
+            j_quality = "⚠️"
+            ev_quality = "现金流数据缺失，赚钱质量与现金含量(OCF/NI)无法核验"
         else:
-            ev_quality = f"现金含量 {c_ratio:.2f}x，投资收益占比 {inv_ratio:.1f}% (经营造血充沛，利润真实度高)"
+            inv_r = inv_ratio if inv_ratio is not None else 0.0
+            j_quality = "✓" if (c_ratio >= 0.8 and inv_r < 25.0) else ("⚠️" if (c_ratio >= 0.5 and inv_r < 50.0) else "✗")
+            if inv_r >= 50.0:
+                ev_quality = f"投资收益占营业利润高达 {inv_r:.1f}% (纸面利润严重依赖非主营收益，主营现金流偏弱 OCF/NI={c_ratio:.2f}x)"
+            elif c_ratio < 0.5:
+                ev_quality = f"现金含量仅 {c_ratio:.2f}x (营收未能有效转化为真金白银现金流，存在应收账款滞压风险)"
+            else:
+                ev_quality = f"现金含量 {c_ratio:.2f}x，投资收益占比 {inv_r:.1f}% (经营造血充沛，利润真实度高)"
 
         # Q3: 护城河存在吗
-        top_biz_ratio = float(mainbz_list[0].get("ratio", 0.0)) if mainbz_list else 55.0
-        top_biz_name = mainbz_list[0].get("name", "主营产品") if mainbz_list else "核心主业"
-        has_tech_barrier = any("AI" in c or "半导体" in c or "芯片" in c or "算力" in c or "机器人" in c for c in concept_list)
-        if top_biz_ratio >= 60.0:
-            j_moat = "✓" if (has_tech_barrier or gm_val >= 35.0) else "⚠️"
-            ev_moat = f"核心业务【{top_biz_name}】营收占比 {top_biz_ratio:.1f}%，客户黏性与转换成本较高"
-        elif top_biz_ratio >= 30.0:
+        if not mainbz_list:
+            top_biz_ratio = None
+            top_biz_name = "核心主业"
             j_moat = "⚠️"
-            ev_moat = f"核心业务【{top_biz_name}】营收占比 {top_biz_ratio:.1f}%，主营多元分散，单项壁垒无法对全公司完全背书"
+            ev_moat = "主营构成明细缺失或未披露，业务纯度与护城河无法核验"
         else:
-            j_moat = "✗"
-            ev_moat = f"主营分散且传统，热点概念营收占比极微，缺乏长期结构性护城河"
+            top_biz_ratio = float(mainbz_list[0].get("ratio", 0.0) or 0.0)
+            top_biz_name = str(mainbz_list[0].get("name", "主营产品"))
+            has_tech_barrier = any("AI" in c or "半导体" in c or "芯片" in c or "算力" in c or "机器人" in c for c in concept_list)
+            if top_biz_ratio >= 60.0:
+                j_moat = "✓" if (has_tech_barrier or (gm_val is not None and gm_val >= 35.0)) else "⚠️"
+                ev_moat = f"核心业务【{top_biz_name}】营收占比 {top_biz_ratio:.1f}%，客户黏性与转换成本较高"
+            elif top_biz_ratio >= 30.0:
+                j_moat = "⚠️"
+                ev_moat = f"核心业务【{top_biz_name}】营收占比 {top_biz_ratio:.1f}%，主营多元分散，单项壁垒无法对全公司完全背书"
+            else:
+                j_moat = "✗"
+                ev_moat = f"主营分散且传统，热点概念营收占比极微，缺乏长期结构性护城河"
 
         # Q4: 管理层可信吗
         if has_reduction and pledge_ratio >= 40.0:
@@ -226,7 +244,10 @@ class JudgmentChainRunner:
         # Q5: 财务底子稳吗
         if is_fatal:
             j_fin = "✗"
-            ev_fin = f"触发严重财务红旗: {fatal_flags[0].title} (资产负债率 {debt_ratio:.1f}%)"
+            ev_fin = f"触发严重财务红旗: {fatal_flags[0].title} (资产负债率 {debt_ratio:.1f}%)" if debt_ratio is not None else f"触发严重财务红旗: {fatal_flags[0].title}"
+        elif debt_ratio is None:
+            j_fin = "⚠️"
+            ev_fin = "资产负债率数据缺失，财务稳健度无法完全核验"
         elif debt_ratio >= 65.0:
             j_fin = "⚠️"
             ev_fin = f"资产负债率 {debt_ratio:.1f}% 偏高，有息负债偿付压力偏大"
@@ -281,8 +302,8 @@ class JudgmentChainRunner:
         growth_m = derived_data.get("growth", {})
         rev_cagr = growth_m.get("revenue_cagr_3y")
         ni_cagr = growth_m.get("net_income_cagr_3y")
-        rev_yoy = growth_m.get("revenue_yoy_latest", 0.12)
-        ni_yoy = growth_m.get("net_income_yoy_latest", 0.15)
+        rev_yoy = growth_m.get("revenue_yoy_latest")
+        ni_yoy = growth_m.get("net_income_yoy_latest")
 
         has_reorg = any("重组" in c or "国企改革" in c or "并购" in c for c in concept_list)
         is_tech = any("AI" in c or "算力" in c or "半导体" in c or "机器人" in c for c in concept_list)
@@ -292,17 +313,21 @@ class JudgmentChainRunner:
             lambda_engine = "国企资产注入/并购重组重塑生产函数预期"
             lambda_signal = "重组方案获批、控制权变更与资产对价落地"
             identity_p = "P4 (重命名重组瓶颈候选)"
-        elif is_tech and (rev_yoy and rev_yoy > 0.25):
+        elif is_tech and (rev_yoy is not None and rev_yoy > 0.25):
             lambda_engine = "新兴科技主线景气放量 + 龙头大客户供应链切入"
             lambda_signal = "单季订单翻倍、高毛利分部放量"
             identity_p = "P3 (高景气赛道先锋龙头)"
-        elif rev_yoy and rev_yoy > 0.15:
+        elif rev_yoy is not None and rev_yoy > 0.15:
             lambda_engine = "主营内生稳健扩产 + 渠道下沉渗透"
             lambda_signal = "季度营收持续稳健抬升"
             identity_p = "P2 (细分产业优势标的)"
-        else:
+        elif rev_yoy is not None:
             lambda_engine = "存量低速周期震荡"
             lambda_signal = "缺乏明确突发加速跳变事件"
+            identity_p = "P1 (普通行业参与者)"
+        else:
+            lambda_engine = "增长数据未披露/未确认"
+            lambda_signal = "定期财务报告增长数据待补充"
             identity_p = "P1 (普通行业参与者)"
 
         # 实锤 vs 回声分级表
@@ -338,14 +363,25 @@ class JudgmentChainRunner:
             f"判定: 【{state_verdict}】 (变好引擎 λ: {lambda_engine})\n"
             f"  • 身份定位: 当前处于【{identity_p}】，升级基本面需真实产业订单接棒\n"
             f"  • 证据分级: {' | '.join(evidence_hierarchy[:2])}\n"
-            f"  • 无记忆性警示: 坚决戒除'跌久了该涨'幻觉，买入必须由 λ↑ 或证据斜率转正驱动\n"
+            f"  • 无记忆性警示: 坚决戒除均值回归假象，买入必须由 λ↑ 或证据斜率转正驱动\n"
             f"  • ★ 全链唯一「该等什么」: {critical_wait}"
         )
 
         # =========================================================================
         # 3. 支柱 ❸ 贵不贵？(P=F+N 叙事溢价拆解 + 反向DCF + [SOTP, DCF]双锚)
         # =========================================================================
-        net_income_latest = (vit_m.get("latest_net_income") or 1.5e8) / 1e8
+        raw_ni = vit_m.get("latest_net_income")
+        ni_is_verified = False
+        if raw_ni is not None and raw_ni != 0:
+            net_income_latest = raw_ni / 1e8
+            ni_is_verified = True
+        elif pe_val > 0 and total_mv > 0:
+            net_income_latest = (total_mv / pe_val) / 1e8
+            ni_is_verified = True
+        else:
+            # 严禁捏造 1.5 亿净利润: 确实缺失时置为最低可计算基准 0.1 亿并标记降级
+            net_income_latest = 0.1
+            ni_is_verified = False
         derivation_result = generate_standard_derivation(
             current_price=price,
             total_shares_yi=total_shares_yi,
@@ -561,7 +597,13 @@ class JudgmentChainRunner:
             governance_info=governance_info,
         )
 
-        act_key = "AVOID" if "回避" in decision_gear else ("BUY" if "做多" in decision_gear or "核心" in decision_gear else "WAIT")
+        # 消除 C2 档位映射自相矛盾: position_cap > 0 统统映射为 BUY 战术; 0 仓位严格根据回避/减仓分流
+        if position_cap > 0.0:
+            act_key = "BUY"
+        elif "回避" in decision_gear or "减仓" in decision_gear:
+            act_key = "AVOID"
+        else:
+            act_key = "WAIT"
         playbook = self.playbook_builder.build(
             quote=quote,
             momentum=momentum,
@@ -642,8 +684,12 @@ class JudgmentChainRunner:
 
         # 机检校验与封顶硬锁死
         ok, findings = self.validator.validate(card, flags)
-        if not ok and has_fatal_red_flags(flags):
-            card["decision_gear"] = "回避"
-            card["position_cap"] = 0.0
+        card["lint_ok"] = ok
+        card["lint_findings"] = findings
+        if not ok:
+            logger.warning(f"决断卡未通过 Lint 质量机检: {findings}")
+            if has_fatal_red_flags(flags):
+                card["decision_gear"] = "回避"
+                card["position_cap"] = 0.0
 
         return card
