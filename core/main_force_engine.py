@@ -40,7 +40,7 @@ import pandas as pd
 
 
 class StageCode(str, enum.Enum):
-    """主力生命周期 7 大阶段代码枚举。"""
+    """主力生命周期 7 大阶段代码枚举 (含未核验降级状态)。"""
     STAGE_1_ACCUMULATION = "STAGE_1_ACCUMULATION"
     STAGE_2_BEAR_TRAP_WASHOUT = "STAGE_2_BEAR_TRAP_WASHOUT"
     STAGE_3_QUIET_WASHOUT = "STAGE_3_QUIET_WASHOUT"
@@ -48,6 +48,7 @@ class StageCode(str, enum.Enum):
     STAGE_5_EXHAUSTION_ACCELERATION = "STAGE_5_EXHAUSTION_ACCELERATION"
     STAGE_6_DISTRIBUTION = "STAGE_6_DISTRIBUTION"
     STAGE_7_PASSIVE_DRIFT = "STAGE_7_PASSIVE_DRIFT"
+    STAGE_UNVERIFIED = "STAGE_UNVERIFIED"
 
 
 @dataclass
@@ -827,6 +828,16 @@ class MainForceStateEngine:
                     f"主力多借助早盘虚假脉冲诱多吸引跟风盘接盘，随后利用算法拆单全天暗中派发撤离，量价呈现严重滞涨或顶背离。"
                 ),
                 "risk_alert": "主力资金进入实质兑现出逃阶段，盘中任何反弹皆是诱多逃命点，谨防断头铡刀式断崖下挫！",
+            }
+
+        elif stage_code == StageCode.STAGE_UNVERIFIED or stage_code == "STAGE_UNVERIFIED":
+            return {
+                "stage_name": "【⏳ 数据缺失/微观未核验】",
+                "suggested_pos_cap": 0.0,
+                "recommended_action": "【等待微观数据完整 / 维持零仓位防守】",
+                "decision_gear_override": "观察",
+                "behavior_desc": "微观分时高频与委托队列数据获取降级或未核验，日内主力资金意图与防伪特征无法验证。",
+                "risk_alert": "【买方风控死锁】微观结构数据缺失，严禁在缺乏盘口证据时盲目建仓，买入仓位锁定 0.0%！",
             }
 
         else:  # STAGE_7_PASSIVE_DRIFT

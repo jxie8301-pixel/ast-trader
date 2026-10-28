@@ -321,6 +321,7 @@ class EltdxCollector:
             }
         except Exception as e:
             self.health.record_failure("5分钟高频分时K线", "eltdx.bars.get(5min)", e)
+            self.health.record_degraded("5分钟高频分时K线", "eltdx.bars.get(5min)", f"接口异常降级: {e}")
             logger.warning(f"获取微观结构异常: {e}")
             return {
                 "smart_q": None,
@@ -336,7 +337,7 @@ class EltdxCollector:
                 "auction_open_amt_wan": 0.0,
                 "auction_open_chg_pct": 0.0,
                 "verdict_text": f"微观分时数据获取降级 ({e})",
-                "main_force_stage": "【⏳ 存量震荡/等待方向期】",
+                "main_force_stage": "【⏳ 数据缺失/微观未核验】",
                 "main_force_behavior": "分时数据暂缺(未核验)，微观特征无法确认",
                 "main_force_risk": "分时高频数据缺失，无法探测日内算法对倒与出货特征",
                 "cum_turnover_20d": None,
@@ -344,9 +345,9 @@ class EltdxCollector:
                 "main_force_confidence": 0.0,
                 "is_transitional": False,
                 "suggested_pos_cap": 0.0,
-                "recommended_action": "观望",
-                "decision_gear_override": None,
-                "stage_code": "STAGE_7_PASSIVE_DRIFT",
+                "recommended_action": "等待微观数据完整",
+                "decision_gear_override": "观察",
+                "stage_code": "STAGE_UNVERIFIED",
                 "anti_spoofing_summary": ["微观盘口数据缺失，防伪审计未核验"],
                 "scores": {},
                 "is_degraded": True,

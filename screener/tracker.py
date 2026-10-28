@@ -8,11 +8,12 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+import config
 from data.eltdx_collector import EltdxCollector
 
 logger = logging.getLogger("ast_trader.tracker")
 
-TRACKER_PATH = Path(".cache/screener_tracker.jsonl")
+TRACKER_PATH = config.CACHE_DIR / "screener_tracker.jsonl"
 
 
 def record_screen_picks(picks: list[dict[str, Any]], mode: str = "close") -> int:

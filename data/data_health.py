@@ -49,6 +49,16 @@ class DataHealthTracker:
             note=note or "接口联通但返回空数据集",
         ))
 
+    def record_degraded(self, name: str, channel: str, note: str = "") -> None:
+        """记录接口降级（采用降级或保底策略，未取得高频全量数据）。"""
+        self.records.append(InterfaceCallRecord(
+            name=name,
+            channel=channel,
+            status="DEGRADED",
+            record_count=0,
+            note=note or "接口发生数据降级，未取得完整高频盘口或财务数据",
+        ))
+
     def record_failure(
         self,
         name: str,

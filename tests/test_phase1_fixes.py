@@ -150,13 +150,13 @@ def test_judgment_chain_gear_playbook_alignment():
         concepts=["机器人", "智能机器"],
     )
 
-    if card["decision_gear"] == "期权仓(小)":
-        assert card["position_cap"] > 0.0
-        # 战术手册动作不能是观望 (WAIT)，必须是 BUY!
-        pb = card.get("playbook")
-        assert pb is not None
-        assert pb.action_label != "观望"
-        assert "买入" in pb.action_label or "进攻" in pb.action_label or "打板" in pb.action_label or "做多" in pb.action_label
+    assert card["decision_gear"] == "期权仓(小)"
+    assert card["position_cap"] > 0.0
+    # 战术手册动作不能是观望 (WAIT)，必须是 BUY!
+    pb = card.get("playbook")
+    assert pb is not None
+    assert pb.action_label != "观望"
+    assert "买入" in pb.action_label or "进攻" in pb.action_label or "打板" in pb.action_label or "做多" in pb.action_label
 
 
 def test_lint_validator_r8_full_text():

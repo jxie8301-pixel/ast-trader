@@ -39,7 +39,7 @@ def _annual(df: pd.DataFrame) -> pd.DataFrame:
     mask = df["end_date"].astype(str).str.endswith("1231")
     ann = df.loc[mask].copy()
     if ann.empty or len(ann) < 2:
-        return df.sort_values("end_date").drop_duplicates("end_date").reset_index(drop=True)
+        return pd.DataFrame()
     ann["_year"] = ann["end_date"].astype(str).str[:4].astype(int)
     ann = ann.sort_values("_year").drop_duplicates("_year", keep="last").reset_index(drop=True)
     return ann
@@ -617,14 +617,14 @@ class AuditEngine:
             return flags
 
         accrual_ratio = (ni - cfo) / ta
-        if abs(accrual_ratio) > 0.10:
+        if abs(accrual_ratio) > config.SLOAN_ACCRUAL_FATAL_RATIO:
             flags.append(RedFlagItem(
                 id=make_flag_id("Sloan", "high_accrual"),
                 framework="Sloan Accrual",
-                level=LEVEL_HIGH if accrual_ratio > 0.10 else LEVEL_MEDIUM,
+                level=LEVEL_HIGH if accrual_ratio > config.SLOAN_ACCRUAL_FATAL_RATIO else LEVEL_MEDIUM,
                 title="高应计异象 (纸面富贵，经营现金流严重落后利润)",
                 value=round(accrual_ratio, 3),
-                threshold="|NI - OCF| / TA > 10%",
+                threshold=f"|NI - OCF| / TA > {config.SLOAN_ACCRUAL_FATAL_RATIO*100:.0f}%",
                 evidence=f"应计利润率={accrual_ratio*100:.1f}% (应计额={(ni-cfo)/1e8:.2f}亿 / 总资产={ta/1e8:.2f}亿)",
                 node="quality",
                 metric_refs=["accrual"],
@@ -638,14 +638,14 @@ class AuditEngine:
     def _check_governance(self, gov: dict[str, Any]) -> list[RedFlagItem]:
         flags = []
         pledge = _safe_float(gov.get("pledge_ratio"), 0.0)
-        if pledge > 0.70:
+        if pledge > config.PLEDGE_FATAL_RATIO:
             flags.append(RedFlagItem(
                 id=make_flag_id("Governance", "fatal_pledge_ratio"),
                 framework="Governance",
                 level=LEVEL_FATAL,
                 title="控股股东高比例质押暴雷风险 (平仓线悬顶)",
                 value=round(pledge, 3),
-                threshold="持股质押比例 > 70% 致命",
+                threshold=f"持股质押比例 > {config.PLEDGE_FATAL_RATIO*100:.0f}% 致命",
                 evidence=f"控股股东/实控人累计质押比例高达 {pledge*100:.1f}%，极易遭遇被动平仓与连环跌停",
                 node="path",
                 metric_refs=["pledge"],

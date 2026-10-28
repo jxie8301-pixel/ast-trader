@@ -53,12 +53,18 @@ def rank_composite(
         total_mv_val = real_quote.get("total_mv", 0.0)
 
         # 2. UZI 原生盘口微观打分 (ranker.py preselect score)
-        # liquidity (0~4分) + strength (-3~10分) * 2 + activity (0~3分)
+        # liquidity (0~4分) + strength (-3~10分) * 2 + activity (0~3分) + 连板动量 (上限 10分)
         liquidity_score = min(amount_val / 10e8, 4.0)
         strength_score = max(-3.0, min(pct_val, 10.0))
         activity_score = min(turnover_val / 3.0, 3.0) if turnover_val > 0 else min(amount_val / 1e8, 2.0)
-        tape_score = round(strength_score * 2.0 + liquidity_score + activity_score + bl * 10.0, 1)
-        c["rank_score"] = tape_score
+        # 修正 R11: 连板权重由 bl * 10.0 调整为均衡的 min(bl * 2.5, 10.0)，防止板数过度碾压流动性与防守纪律
+        board_score = min(bl * 2.5, 10.0)
+        tape_score = strength_score * 2.0 + liquidity_score + activity_score + board_score
+        # 修正 R3: 接入 money_flow_degraded 惩罚与标记
+        if c.get("money_flow_degraded", False):
+            tape_score -= 5.0
+            c["degraded_reason"] = "资金流缺失降级"
+        c["rank_score"] = round(tape_score, 1)
 
         # 3. 提取微观特征并运行 24 大一线游资战法匹配
         quote_proxy = {

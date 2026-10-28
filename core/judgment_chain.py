@@ -372,71 +372,90 @@ class JudgmentChainRunner:
         # =========================================================================
         raw_ni = vit_m.get("latest_net_income")
         ni_is_verified = False
+        net_income_latest = None
         if raw_ni is not None and raw_ni != 0:
             net_income_latest = raw_ni / 1e8
             ni_is_verified = True
         elif pe_val > 0 and total_mv > 0:
             net_income_latest = (total_mv / pe_val) / 1e8
             ni_is_verified = True
+
+        if not ni_is_verified or net_income_latest is None:
+            # 严格贯彻买方数据纪律: 净利润缺失或未通过核验，严禁编造 0.1 亿计算虚假 DCF/SOTP
+            odds_verdict = "未核验(财务缺失)"
+            sotp_ps = 0.0
+            dcf_ps = 0.0
+            deriv = None
+            anchor = None
+            rdcf = None
+            pfn = None
+            pillar_odds_summary = (
+                "判定: 【未核验(财务缺失)】 (估值不可计算)\n"
+                "  • 警告: 最新净利润与 PE 估值基准缺失或未核验，严禁根据编造数值生成 DCF / SOTP 价格锚点！\n"
+                "  • 买方风控: 缺乏确定性估值底座支持，严禁进行高仓位左侧或右侧重击，单票仓位锁定为 0。"
+            )
         else:
-            # 严禁捏造 1.5 亿净利润: 确实缺失时置为最低可计算基准 0.1 亿并标记降级
-            net_income_latest = 0.1
-            ni_is_verified = False
-        derivation_result = generate_standard_derivation(
-            current_price=price,
-            total_shares_yi=total_shares_yi,
-            net_income_latest_yi=net_income_latest,
-            main_business=mainbz_list,
-            is_growth=is_tech,
-        )
-        deriv = derivation_result["derivation"]
-        anchor = derivation_result["anchor_range"]
-        rdcf = derivation_result["reverse_dcf"]
-        pfn = deriv["p_f_n"]
-        sotp_ps = anchor["low"]["value"]
-        dcf_ps = anchor["high"]["value"]
+            derivation_result = generate_standard_derivation(
+                current_price=price,
+                total_shares_yi=total_shares_yi,
+                net_income_latest_yi=net_income_latest,
+                main_business=mainbz_list,
+                is_growth=is_tech,
+            )
+            deriv = derivation_result["derivation"]
+            anchor = derivation_result["anchor_range"]
+            rdcf = derivation_result["reverse_dcf"]
+            pfn = deriv["p_f_n"]
+            sotp_ps = anchor["low"]["value"]
+            dcf_ps = anchor["high"]["value"]
 
-        # 赔率判定 (便宜(有余地) / 合理 / 已被价格计入 / 买完完美未来)
-        if price <= sotp_ps:
-            odds_verdict = "便宜(有余地)"
-        elif price <= dcf_ps:
-            odds_verdict = "合理"
-        elif rdcf["sanity"] == "买完完美未来":
-            odds_verdict = "买完完美未来"
-        else:
-            odds_verdict = "已被价格计入"
+            # 赔率判定 (便宜(有余地) / 合理 / 已被价格计入 / 买完完美未来)
+            if price <= sotp_ps:
+                odds_verdict = "便宜(有余地)"
+            elif price <= dcf_ps:
+                odds_verdict = "合理"
+            elif rdcf["sanity"] == "买完完美未来":
+                odds_verdict = "买完完美未来"
+            else:
+                odds_verdict = "已被价格计入"
 
-        p_f_n_str = (
-            f"市值 {pfn['market_cap']:.1f} 亿 = 基本面底座 F({pfn['fact']:.1f}亿, 占比 {100-pfn['narrative_share']*100:.0f}%) "
-            f"+ 叙事溢价 N({pfn['narrative']:.1f}亿, 占比 {pfn['narrative_share']*100:.0f}%) "
-            f"[{'⚠️ 市场强制交付的硬性义务 (Obligation)' if pfn['kind']=='embedded_obligation' else '✓ 白送的可选彩票 (Free Option)'}]"
-        )
-        anchor_str = (
-            f"区间低端 SOTP={sotp_ps:.2f}元 (只认已兑现利润) | 区间高端 DCF={dcf_ps:.2f}元 (三情景加权) | "
-            f"现价({price:.2f}元) = 低端 {price/sotp_ps:.2f}x / 高端 {price/dcf_ps:.2f}x"
-        )
-        rdcf_str = (
-            f"现价隐含 5年收入 CAGR 需达 {rdcf['implied_cagr']:.1f}% (市场预期评估: 【{rdcf['sanity']}】)；"
-            f"证伪条件: {rdcf['falsification_condition']}"
-        )
+            p_f_n_str = (
+                f"市值 {pfn['market_cap']:.1f} 亿 = 基本面底座 F({pfn['fact']:.1f}亿, 占比 {100-pfn['narrative_share']*100:.0f}%) "
+                f"+ 叙事溢价 N({pfn['narrative']:.1f}亿, 占比 {pfn['narrative_share']*100:.0f}%) "
+                f"[{'⚠️ 市场强制交付的硬性义务 (Obligation)' if pfn['kind']=='embedded_obligation' else '✓ 白送的可选彩票 (Free Option)'}]"
+            )
+            anchor_str = (
+                f"区间低端 SOTP={sotp_ps:.2f}元 (只认已兑现利润) | 区间高端 DCF={dcf_ps:.2f}元 (三情景加权) | "
+                f"现价({price:.2f}元) = 低端 {price/sotp_ps:.2f}x / 高端 {price/dcf_ps:.2f}x"
+            )
+            rdcf_str = (
+                f"现价隐含 5年收入 CAGR 需达 {rdcf['implied_cagr']:.1f}% (市场预期评估: 【{rdcf['sanity']}】)；"
+                f"证伪条件: {rdcf['falsification_condition']}"
+            )
 
-        pillar_odds_summary = (
-            f"判定: 【{odds_verdict}】 (双锚同向标记: {'✓ 同向共振' if anchor['same_direction'] else '⚠️ 取决于口径'})\n"
-            f"  • P=F+N 叙事拆解: {p_f_n_str}\n"
-            f"  • 反向 DCF (市场到底在赌什么): {rdcf_str}\n"
-            f"  • 合理价区间 [SOTP, DCF]: {anchor_str}"
-        )
+            pillar_odds_summary = (
+                f"判定: 【{odds_verdict}】 (双锚同向标记: {'✓ 同向共振' if anchor['same_direction'] else '⚠️ 取决于口径'})\n"
+                f"  • P=F+N 叙事拆解: {p_f_n_str}\n"
+                f"  • 反向 DCF (市场到底在赌什么): {rdcf_str}\n"
+                f"  • 合理价区间 [SOTP, DCF]: {anchor_str}"
+            )
 
         # =========================================================================
         # 4. 支柱 ❹ 主力行为生命周期与路径承载 (结合 Main Force Engine & 微观结构)
         # =========================================================================
         micro = microstructure or {}
+        is_micro_degraded = bool(micro.get("is_degraded", False))
+        mf_stage_code = micro.get("stage_code", "")
+        if mf_stage_code == "STAGE_UNVERIFIED":
+            is_micro_degraded = True
         mf_stage = micro.get("main_force_stage", "【⏳ 存量震荡/等待方向期】")
         mf_behavior = micro.get("main_force_behavior", "")
-        mf_stage_code = micro.get("stage_code", "")
         mf_override = micro.get("decision_gear_override")
-        mf_cap = micro.get("suggested_pos_cap", 0.15)
-        mf_conf = micro.get("main_force_confidence", 80.0)
+        mf_cap = micro.get("suggested_pos_cap")
+        if is_micro_degraded:
+            mf_cap = 0.0
+            mf_override = "观察"
+        mf_conf = micro.get("main_force_confidence", 80.0 if not is_micro_degraded else 0.0)
         is_trans = micro.get("is_transitional", False)
         anti_spoofing_list = micro.get("anti_spoofing_summary", [])
 
@@ -445,9 +464,10 @@ class JudgmentChainRunner:
         auc_chg = micro.get("auction_open_chg_pct", 0.0)
         auc_amt = micro.get("auction_open_amt_wan", 0.0)
 
-        # 筹码结构与左尾深度
+        # 筹码结构与左尾深度 (安全处理 sotp_ps 缺失)
         profit_chip_pct = round(100.0 - overhead_chips, 1)
-        depth_to_sotp = round((price - sotp_ps) / price * -100.0, 1) if price > 0 else 0.0
+        depth_to_sotp = round((price - sotp_ps) / price * -100.0, 1) if (price > 0 and sotp_ps > 0) else None
+        depth_sotp_str = f"{depth_to_sotp:.1f}%" if depth_to_sotp is not None else "未核验"
 
         flow_parts = []
         if smart_q is not None and smart_q > 0:
@@ -457,16 +477,20 @@ class JudgmentChainRunner:
         elif auc_amt > 0:
             flow_parts.append(f"早盘竞价平稳 ({auc_chg:+.2f}%, {auc_amt:.0f}万)")
 
-        # 路径可承受性判定 (可承受 / 高尾险·不可承受)
-        if is_fatal or mf_stage_code in ("STAGE_6_DISTRIBUTION", "STAGE_7_PASSIVE_DRIFT") or overhead_chips >= 55.0:
+        # 路径可承受性判定 (可承受 / 高尾险·不可承受 / 未核验)
+        if is_micro_degraded:
+            path_verdict = "未核验(微观缺失)"
+        elif is_fatal or mf_stage_code in ("STAGE_6_DISTRIBUTION", "STAGE_7_PASSIVE_DRIFT") or overhead_chips >= 55.0:
             path_verdict = "高尾险·不可承受"
         else:
             path_verdict = "可承受"
 
+        deg_banner = "⚠️ 【微观数据降级】高频分时与委托队列数据缺失，防伪审计未核验，风控严禁建仓！\n" if is_micro_degraded else ""
         pillar_path_summary = (
+            f"{deg_banner}"
             f"判定: 【{path_verdict}】 (主力阶段: {mf_stage}，置信度 {mf_conf:.1f}%{'，多空过渡区' if is_trans else ''})\n"
-            f"  • 微观盘口防伪: {'；'.join(flow_parts) if flow_parts else '盘口维持常规博弈'}\n"
-            f"  • 筹码沉淀承载: 获利盘 {profit_chip_pct:.1f}% / 上方套牢盘 {overhead_chips:.1f}% (跌回 SOTP 保守底座左尾深度: {depth_to_sotp:.1f}%)"
+            f"  • 微观盘口防伪: {'；'.join(flow_parts) if flow_parts else ('未核验(数据降级)' if is_micro_degraded else '盘口维持常规博弈')}\n"
+            f"  • 筹码沉淀承载: 获利盘 {profit_chip_pct:.1f}% / 上方套牢盘 {overhead_chips:.1f}% (跌回 SOTP 保守底座左尾深度: {depth_sotp_str})"
         )
         if mf_behavior:
             pillar_path_summary += f"\n  • 操盘透视: {mf_behavior}"
@@ -544,7 +568,12 @@ class JudgmentChainRunner:
         elif state_verdict == "↑变好+证据确认" and odds_verdict in ("便宜(有余地)", "合理") and path_verdict == "可承受":
             decision_gear = "核心仓"
             decision_title = "【🔥 核心做多 (高确信重击)】"
-            position_cap = min(0.25, mf_cap if mf_cap > 0 else 0.20)
+            if is_micro_degraded or mf_cap == 0.0 or not ni_is_verified:
+                position_cap = 0.0
+                decision_gear = "等证据临界(观察)"
+                decision_title = "【👀 等待微观/估值核验 (观察)】"
+            else:
+                position_cap = min(0.25, mf_cap if mf_cap is not None else 0.20)
             core_contra = "基本面在变好且经报表实锤确认，估值具有充分安全垫，主力处于建仓拉升主升通道，路径可承受性优良。"
             action_tactic = (
                 f"• 持币者 (分时低吸/竞价跟进): 早盘 9:25 竞价若高开 1%~3% 且量比>1.8 顺势建仓，或开盘回踩分时均线企稳分批买入。\n"
@@ -554,7 +583,12 @@ class JudgmentChainRunner:
         elif state_verdict == "↑变好但仅注意力·未确认" and ladder_info and ladder_info.get("board_level", 0) >= 2:
             decision_gear = "期权仓(小)"
             decision_title = "【⚡ 题材接力 (轻仓试错博弈)】"
-            position_cap = min(0.10, mf_cap if mf_cap > 0 else 0.08)
+            if is_micro_degraded or mf_cap == 0.0:
+                position_cap = 0.0
+                decision_gear = "等证据临界(观察)"
+                decision_title = "【👀 等待微观核验 (观察)】"
+            else:
+                position_cap = min(0.10, mf_cap if mf_cap is not None else 0.08)
             core_contra = f"短线题材高度聚焦 (梯队 {ladder_info.get('board_level',0)}板)，右尾爆发力大但产业实锤未确认，属典型事件注意力博弈。"
             action_tactic = (
                 f"• 持币者 (早盘竞价决断): 次日早盘 9:25 竞价成交量需达昨日全天 15% 以上且高开>2%，方可打板或小仓位跟进；若低开坚决放弃！\n"
@@ -581,6 +615,12 @@ class JudgmentChainRunner:
                 f"  • 持股者 (控制回撤): 依托支撑位 {support_lvl:.2f} 元做防守，破位收不回减仓规避钝刀子磨损。"
             )
             invalidation = f"跌破强支撑线 {support_lvl:.2f} 元剔除出跟踪池。"
+
+        # 主力阶段硬核死锁重载 (如 STAGE_5 赶顶严禁追高，STAGE_6 出货清仓回避，STAGE_UNVERIFIED 降级观察)
+        if mf_override and not is_fatal:
+            decision_gear = mf_override
+            if mf_override in ("回避", "观察"):
+                position_cap = 0.0
 
         # 四维博弈雷达与实操剧本生成
         persona_names = [p.get("youzi_name", "") for p in (matched_personas or []) if isinstance(p, dict)]
@@ -639,18 +679,22 @@ class JudgmentChainRunner:
                 "decision_title": decision_title,
                 "position_cap": position_cap,
                 "triad_verdict": f"[{state_verdict} | {odds_verdict} | {path_verdict}]",
-                "three_part_conclusion": f"好公司? 【{quality_verdict}】 · 好下注? 【{'是' if '做多' in decision_gear or '核心' in decision_gear else '否'}】 · 好价格? 【{'是' if '便宜' in odds_verdict or '合理' in odds_verdict else '否'}】",
+                "three_part_conclusion": f"好公司? 【{'是' if '好' in quality_verdict else '否/存疑'}】 · 好下注? 【{'是' if position_cap > 0 else '否'}】 · 好价格? 【{'是' if '便宜' in odds_verdict or '合理' in odds_verdict else '否'}】",
                 "core_contradiction": core_contra,
                 "action_tactic": action_tactic,
                 "regulatory_status": reg_status_str,
                 "invalidation_line": invalidation,
             },
-            # 兼容字段
+            # 兼容字段 (清晰别名)
             "pillar_gate": p_gate,
             "pillar_business": pillar_state_summary,
+            "pillar_state": pillar_state_summary,
             "pillar_tape": pillar_odds_summary,
+            "pillar_odds": pillar_odds_summary,
             "pillar_flow": pillar_path_summary,
+            "pillar_path": pillar_path_summary,
             "pillar_audit": pillar_quality_summary,
+            "pillar_quality": pillar_quality_summary,
             "decision_gear": decision_gear,
             "decision_title": decision_title,
             "position_cap": position_cap,
@@ -682,7 +726,7 @@ class JudgmentChainRunner:
             "data_health": data_health or {},
         }
 
-        # 机检校验与封顶硬锁死
+        # 机检校验与封顶硬锁死 (R8: 严格门控，非致命失败亦必须降级观察并清零仓位)
         ok, findings = self.validator.validate(card, flags)
         card["lint_ok"] = ok
         card["lint_findings"] = findings
@@ -691,5 +735,15 @@ class JudgmentChainRunner:
             if has_fatal_red_flags(flags):
                 card["decision_gear"] = "回避"
                 card["position_cap"] = 0.0
+            else:
+                card["decision_gear"] = "等证据临界(观察)"
+                card["position_cap"] = 0.0
+            card["pillar_5_decision"]["decision_gear"] = card["decision_gear"]
+            card["pillar_5_decision"]["position_cap"] = card["position_cap"]
+            card["pillar_5_decision"]["three_part_conclusion"] = (
+                f"好公司? 【{'是' if '好' in quality_verdict else '否/存疑'}】 · "
+                f"好下注? 【{'是' if card['position_cap'] > 0 else '否'}】 · "
+                f"好价格? 【{'是' if '便宜' in odds_verdict or '合理' in odds_verdict else '否'}】"
+            )
 
         return card

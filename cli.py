@@ -16,10 +16,12 @@ if sys.platform == "win32":
         pass
     os.environ.setdefault("PYTHONIOENCODING", "utf-8")
 
-# 日志统一落盘配置
-os.makedirs("logs", exist_ok=True)
+import config
+
+# 日志统一落盘配置 (收敛到 config.LOG_FILE)
+os.makedirs(config.LOG_FILE.parent, exist_ok=True)
 logging.basicConfig(
-    filename="logs/ast_trader.log",
+    filename=str(config.LOG_FILE),
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     encoding="utf-8",

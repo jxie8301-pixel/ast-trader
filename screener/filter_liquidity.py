@@ -20,6 +20,7 @@ def filter_liquidity(
     dropped_st = 0
     dropped_liq = 0
     dropped_pct = 0
+    dropped_turnover = 0
 
     for r in ladder_rows:
         fcode = r.get("full_code", "")
@@ -53,11 +54,20 @@ def filter_liquidity(
             dropped_liq += 1
             continue
 
-        # 3. 涨幅动量硬核过滤 (要求达到短线爆发阈值)
+        # 3. 换手率区间过滤 (对齐 SRS FR-06 / config: 7% ~ 28%)
+        turnover = float(q.get("turnover_ratio", 0.0) or 0.0)
+        if turnover > 0.0 and not is_one_word_leader:
+            if turnover < config.MOMENTUM_MIN_TURNOVER_RATE or turnover > config.MOMENTUM_MAX_TURNOVER_RATE:
+                dropped_turnover += 1
+                continue
+
+        # 4. 涨幅动量硬核过滤 (要求达到短线爆发阈值且不超过涨幅上限)
         pct_threshold = min_pct if min_pct is not None else config.MOMENTUM_MIN_PCT_CHG
+        is_bse = code_num.startswith(("8", "4", "920"))
+        max_pct = 30.5 if is_bse else (20.5 if is_gem_star else 10.5)
         # 若是涨停封板 (>=9.5% 或 >=19.5%) 或涨幅达到阈值才放行
         is_limit_up = pct >= 9.5 or (is_gem_star and pct >= 19.5)
-        if pct < pct_threshold and not is_limit_up:
+        if (pct < pct_threshold and not is_limit_up) or (pct > max_pct):
             dropped_pct += 1
             continue
 
@@ -69,6 +79,7 @@ def filter_liquidity(
             "close": close,
             "pct_chg": pct,
             "amount": effective_amt,
+            "turnover_ratio": turnover,
             "board_level": board_level,
             "limit_reason": reason,
             "seal_amt": seal_amt,
@@ -76,7 +87,7 @@ def filter_liquidity(
 
     logger.info(
         f"Tier 1 初筛完成: 输入 {len(ladder_rows)} 只 -> "
-        f"剔除 ST {dropped_st} 只 / 流动性不足 {dropped_liq} 只 / 涨幅弱势 {dropped_pct} 只 -> "
+        f"剔除 ST {dropped_st} 只 / 流动性不足 {dropped_liq} 只 / 换手率不符 {dropped_turnover} 只 / 涨幅异常/弱势 {dropped_pct} 只 -> "
         f"保留 {len(passed)} 只合格标的"
     )
     return passed
