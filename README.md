@@ -108,11 +108,12 @@ ast-trader/
 ├── lint/                          # 质量门控与机检
 │   └── validator.py               # 算术闭合、致命红旗硬锁死与单点真理机检
 │
-├── tests/                         # 自动化测试套件 (56+ 单元与集成测试)
+├── tests/                         # 自动化测试套件 (74 单元与集成测试，全绿通过)
 └── docs/                          # 系统深度设计与演进文档
-    ├── ARCHITECTURE.md            # 系统架构设计与数据流转规格
+    ├── ARCHITECTURE.md            # 系统架构设计与数据流转规格 (权威鲜活说明)
     ├── PILLARS_AND_METHODOLOGY.md # 五大支柱与投研量化方法论
-    └── ROADMAP_AND_AI_EVOLUTION.md# 终局演进思路与双引擎融合架构
+    ├── ROADMAP_AND_AI_EVOLUTION.md# 终局演进思路与双引擎融合架构
+    └── FUTURE_OPTIMIZATION_SPECIFICATIONS.md # 未实施核心优化点工程规格说明书与预研成果
 ```
 
 ---
@@ -132,3 +133,4 @@ pytest tests/
 * 🏗️ **[系统架构与数据流转规格说明 (`docs/ARCHITECTURE.md`)](docs/ARCHITECTURE.md)**：详细阐述系统各模块交互、数据流时序与接口契约。
 * 🧠 **[五大投研支柱与量化方法论 (`docs/PILLARS_AND_METHODOLOGY.md`)](docs/PILLARS_AND_METHODOLOGY.md)**：质地五问、状态跃迁 $\lambda$、反向 DCF、主力 7 阶段与双轨实战战术的数学实现。
 * 🚀 **[终局演进思路与双引擎架构 (`docs/ROADMAP_AND_AI_EVOLUTION.md`)](docs/ROADMAP_AND_AI_EVOLUTION.md)**：深入探讨确定性量化引擎与大语言模型（LLM）的优劣边界，规划未来「量化底座 + AI 语义协处理器」的融合演进方案。
+* 🔭 **[未实施核心优化点工程规格说明书与预研成果 (`docs/FUTURE_OPTIMIZATION_SPECIFICATIONS.md`)](docs/FUTURE_OPTIMIZATION_SPECIFICATIONS.md)**：为 AI 语义协处理器、板块相对强弱轮动（RS Matrix）、龙虎榜席位协同及实盘账本多日回测提供严密的数学模型、接口契约与第三方 AI 审计验收标准。
