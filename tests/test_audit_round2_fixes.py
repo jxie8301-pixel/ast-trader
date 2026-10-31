@@ -116,7 +116,8 @@ def test_r5_filter_liquidity_turnover_bounds():
         "sh600001": {"close": 10.0, "pct_chg": 5.0, "amount": 6e8, "turnover_ratio": 3.0}, # < 7% 剔除
         "sh600002": {"close": 10.0, "pct_chg": 5.0, "amount": 6e8, "turnover_ratio": 12.0}, # 合格
         "sh600003": {"close": 10.0, "pct_chg": 5.0, "amount": 6e8, "turnover_ratio": 35.0}, # > 28% 剔除
-        "sh600004": {"close": 10.0, "pct_chg": 10.0, "amount": 0.5e8, "turnover_ratio": 1.0}, # 一字板封单豁免
+        # ★ 一字板必须 high == low（全天一档价），否则只是"小成交的高位板"，不予豁免
+        "sh600004": {"close": 10.0, "pct_chg": 10.0, "amount": 0.5e8, "turnover_ratio": 1.0, "high": 10.0, "low": 10.0}, # 一字板封单豁免
     }
     passed = filter_liquidity(ladder, quotes)
     passed_codes = [p["code"] for p in passed]

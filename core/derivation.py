@@ -11,6 +11,18 @@ PROB_SUM_TOL = 0.005
 TABLE_SLOTS = ("sotp", "discount_rate", "dcf")
 _SLOT_RE = re.compile(r"\{\{\s*(" + "|".join(TABLE_SLOTS) + r")\s*\}\}")
 
+# ─── 反向 DCF 校准常数（原为散落在函数体内的裸魔数，此处具名化）────────────
+#: 反向 DCF 折现年数：「现价 ÷ SOTP 底座」被摊到几年上反推增速
+REVERSE_DCF_YEARS = 5.0
+#: 隐含增速的基准换算系数（把 5 年累计倍数映射为年化 CAGR 的经验标尺）
+REVERSE_DCF_CAGR_SCALE = 15.0
+#: sanity 分档阈值：> 该值判「买完完美未来」
+REVERSE_DCF_SANITY_FATAL = 35.0
+#: sanity 分档阈值：> 该值判「过度乐观」
+REVERSE_DCF_SANITY_STRETCHED = 20.0
+#: 隐含退出 PE 相对基准 PE 的溢价倍数
+REVERSE_DCF_EXIT_PE_MULTIPLE = 1.2
+
 
 class DerivationError(ValueError):
     """推导块结构不完整或计算冲突。"""
@@ -270,15 +282,27 @@ def generate_standard_derivation(
     net_income_latest_yi: float,
     main_business: list[dict[str, Any]] | None = None,
     is_growth: bool = False,
+    net_income_basis: str = "年化净利",
+    industry_pe: float | None = None,
 ) -> dict[str, Any]:
-    """根据标的最新价格、股本与净利润，自动生成严格符合算术闭合的完整推导数据。"""
+    """根据标的最新价格、股本与净利润，自动生成严格符合算术闭合的完整推导数据。
+
+    `net_income_basis` 是**口径标签**，会原样写进 `fact_basis` 与 SOTP 表头。
+    ★ 默认沿用「年化净利」是历史措辞；调用方若传的是 TTM 净利，必须显式
+      传 `net_income_basis="TTM 归母净利"`，否则读者会以为分子是年度值 ——
+      A 股三季报是前三季度累计口径，把它标成"年化"等于把盈利少算 25%。
+    `industry_pe`: 细分行业成分股动态 PE 中位数，若提供则对标行业中枢，消除硬编码。
+    """
     sc_val = max(0.0001, round(total_shares_yi, 4))
     price_val = max(0.01, round(current_price, 2))
     mc_val = max(0.01, round(price_val * sc_val, 2))
 
     # 1. 基本面 F 与叙事溢价 N
-    # 基础保守倍数: 科技成长 20x，普通制造 15x
-    base_pe = 20.0 if is_growth else 15.0
+    # 基础保守倍数: 若有行业动态中位数则优先对标行业中位数，否则科技成长 20x，普通制造 15x
+    if industry_pe is not None and industry_pe > 0:
+        base_pe = round(max(8.0, min(80.0, float(industry_pe))), 1)
+    else:
+        base_pe = 20.0 if is_growth else 15.0
     ni_mature = max(0.1, round(net_income_latest_yi, 2))
     fact_val = round(ni_mature * base_pe, 2)
     narrative_val = round(mc_val - fact_val, 2)
@@ -295,7 +319,16 @@ def generate_standard_derivation(
         for b in biz_list[:3]:
             r = float(b.get("ratio", 0.0) or 0.0) / tot_ratio
             seg_profit = round(ni_mature * r, 2)
-            seg_pe = base_pe + (5.0 if "AI" in b.get("name", "") or "芯片" in b.get("name", "") else 0.0)
+            b_name = str(b.get("name", ""))
+            # 差异化分部估值：高科技/核心主业对标行业景气倍数，传统辅助材料/低毛利分部折价
+            is_seg_high_tech = any(k in b_name for k in ("AI", "芯片", "半导体", "光学", "光电子", "元器件", "精密", "算法", "软件", "智能"))
+            is_seg_mature = any(k in b_name for k in ("材料", "加工", "贸易", "传统", "其他", "通用"))
+            if is_seg_high_tech:
+                seg_pe = max(base_pe, 25.0)
+            elif is_seg_mature:
+                seg_pe = min(base_pe, 15.0)
+            else:
+                seg_pe = base_pe
             seg_val = round(seg_profit * seg_pe, 2)
             segments.append({
                 "name": str(b.get("name", "核心业务")),
@@ -394,12 +427,12 @@ def generate_standard_derivation(
             "narrative": narrative_val,
             "narrative_share": n_share,
             "kind": kind,
-            "fact_basis": f"已并表成熟业务年化净利 {ni_mature:.2f} 亿元 × 基准合理市盈率 {base_pe:.0f}x",
+            "fact_basis": f"已并表成熟业务{net_income_basis} {ni_mature:.2f} 亿元 × 基准合理市盈率 {base_pe:.0f}x",
             "growth_compare": "叙事折算隐含增速 > 历史内生基本面增速",
         },
         "sotp": {
             "segments": segments,
-            "profit_label": "年化净利",
+            "profit_label": net_income_basis,
             "enterprise_value": sotp_ev,
             "net_debt": net_debt,
             "equity_value": sotp_eq,
@@ -425,14 +458,34 @@ def generate_standard_derivation(
     }
 
     # 反向 DCF 推导
-    implied_cagr = round((price_val / sotp_ps) ** (1.0 / 5.0) * 15.0, 1) if sotp_ps > 0 else 25.0
-    sanity = "买完完美未来" if implied_cagr > 35.0 else ("过度乐观" if implied_cagr > 20.0 else "可信")
-    falsify_cond = f"若连续两季营收 CAGR 低于 {max(10.0, implied_cagr*0.6):.1f}%，叙事溢价将迅速蒸发"
+    if sotp_ps > 0:
+        implied_cagr = round(
+            (price_val / sotp_ps) ** (1.0 / REVERSE_DCF_YEARS) * REVERSE_DCF_CAGR_SCALE, 1
+        )
+    else:
+        # 锚点非正：严禁伪造增速，置 None 并由 sanity 显式标注未核验
+        implied_cagr = None
+    if implied_cagr is None:
+        sanity = "未核验(锚点非正)"
+    elif implied_cagr > REVERSE_DCF_SANITY_FATAL:
+        sanity = "买完完美未来"
+    elif implied_cagr > REVERSE_DCF_SANITY_STRETCHED:
+        sanity = "过度乐观"
+    else:
+        sanity = "可信"
+    if implied_cagr is None:
+        falsify_cond = "SOTP 锚点非正，反向 DCF 无法反推隐含增速，叙事溢价不予量化"
+    else:
+        falsify_cond = f"若连续两季营收 CAGR 低于 {max(10.0, implied_cagr*0.6):.1f}%，叙事溢价将迅速蒸发"
 
     reverse_dcf = {
         "implied_cagr": implied_cagr,
-        "implied_margin": 16.5,
-        "implied_exit_pe": base_pe * 1.2,
+        # ★ P1-3: 此处原为硬编码 16.5% —— 既无数据源也无推导过程，属「凭空捏造的
+        #   默认值」，直接违反 SRS §6.3 数据纪律（严禁捏造财务数据）。
+        #   真实净利率需由利润表推导，当前推导链未提供该通道，故一律置 None。
+        "implied_margin": None,
+        "implied_margin_basis": "未核验(推导链未提供隐含净利率通道，严禁填默认值)",
+        "implied_exit_pe": base_pe * REVERSE_DCF_EXIT_PE_MULTIPLE,
         "sanity": sanity,
         "falsification_condition": falsify_cond,
     }

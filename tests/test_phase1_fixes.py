@@ -33,7 +33,8 @@ def test_filter_liquidity_real_enforcement():
         "sz000002": {"close": 8.0, "pct_chg": 5.0, "amount": 6.0e8},  # ST 剔除
         "sz000003": {"close": 10.0, "pct_chg": 6.0, "amount": 1.0e8}, # 成交额 1 亿 < 5 亿，剔除
         "sz000004": {"close": 12.0, "pct_chg": 2.1, "amount": 6.0e8}, # 涨幅 2.1% < 4.5%，剔除
-        "sz000005": {"close": 20.0, "pct_chg": 10.0, "amount": 0.5e8}, # 一字板成交量小但封单 2 亿且 3 板，放行
+        # ★ 一字板的定义是"全天只有一档价"（high == low），补上 high/low 才是真·一字板
+        "sz000005": {"close": 20.0, "pct_chg": 10.0, "amount": 0.5e8, "high": 20.0, "low": 20.0}, # 一字板成交量小但封单 2 亿且 3 板，放行
     }
 
     passed = filter_liquidity(ladder_rows, quotes_map)

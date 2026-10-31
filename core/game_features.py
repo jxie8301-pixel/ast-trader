@@ -60,6 +60,14 @@ class GameFeatureExtractor:
         current_dd = round((latest_close - peak_close) / peak_close * 100.0, 2)
 
         # 2. 上方套牢筹码占比 (成交量高于当前价格的累计成交占比)
+        # ★ 20261029 审计 P1-4：这个指标**不是真实筹码分布** —— 真实筹码需要各价位的
+        #   持仓成本/沉淀分布，本项目未接此类数据源。它的实际口径是
+        #   「近 60 日中收盘价高于今日收盘的那些交易日的成交量占比」，本质是一个
+        #   **量能代理**。旧代码把它当真筹码用：pillar4 用 ``>= 55%`` 直接触发
+        #   「高尾险·不可承受」（清仓级），main_force 的 STAGE_7 用它做定义性加分，
+        #   语义被系统性高估。此处保留原键名（兼容既有调用方），但追加：
+        #     · 语义明确的别名 ``overhead_volume_pct_60d``；
+        #     · 口径标记 ``overhead_chip_basis``（供呈现层如实标注，不再冒充真筹码）。
         total_vol = float(vol.sum())
         if total_vol > 0:
             overhead_vol = float(vol[close > latest_close].sum())
@@ -74,9 +82,18 @@ class GameFeatureExtractor:
         else:
             volatility_20d = 30.0
 
-        # 4. 支撑与阻力位
-        support_level = round(float(close.iloc[-20:].min()), 2) if len(close) >= 20 else round(latest_close * 0.95, 2)
-        resistance_level = round(peak_close, 2)
+        # 4. 支撑与阻力位（近端实战战术级别，避免拿60日历史大顶当短线突破买点）
+        recent_window = close.iloc[-20:] if len(close) >= 20 else close
+        recent_min = float(recent_window.min())
+        recent_max = float(recent_window.max())
+
+        support_level = round(recent_min, 2)
+        # 若近 20 日平台高点高于现价 1.5% 以上，近端阻力即为近 20 日平台箱顶/颈线；
+        # 否则（现价已突破近 20 日高点）才放眼看 60 日峰值阻力
+        if recent_max >= latest_close * 1.015:
+            resistance_level = round(recent_max, 2)
+        else:
+            resistance_level = round(peak_close, 2)
 
         return {
             "ma5": round(ma5_val, 2),
@@ -88,7 +105,10 @@ class GameFeatureExtractor:
             "ma5_bias": bias_ma5,
             "max_drawdown_60d": max_dd_60d,
             "current_drawdown": current_dd,
+            # 「套牢盘」实为量能代理，见上方 ★ P1-4 说明
             "overhead_chip_pct": overhead_chip_pct,
+            "overhead_volume_pct_60d": overhead_chip_pct,
+            "overhead_chip_basis": "volume_proxy_60d",
             "volatility_20d": volatility_20d,
             "support_level": support_level,
             "resistance_level": resistance_level,

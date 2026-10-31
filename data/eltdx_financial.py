@@ -32,6 +32,7 @@ import io
 import re
 import sys
 import zipfile
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -309,3 +310,44 @@ def fields_of(ts_code: str, period: str) -> tuple[float, ...] | None:
 def latest_periods(count: int = 4, *, annual_only: bool = True) -> list[str]:
     """最近 `count` 个可用报告期（默认只要年报期），降序。"""
     return available_periods(annual_only=annual_only)[:count]
+
+
+def report_period_map(codes: Iterable[str], max_lookback: int = 4) -> dict[str, str]:
+    """反查给定的股票代码列表中，每只股票各自真正的最新已披露报告期 (YYYYMMDD)。
+
+    ★ 20261030 修复 N-2 (P1-2回归缺陷)：
+      不能以全局最新财报档案期统一套用给所有股票。在三季报/半年报披露窗口期，
+      全市场只有部分公司完成披露。必须逐股反查每家公司真实的最新披露期次。
+    """
+    code_set = {un.code6(c) for c in codes if c}
+    if not code_set:
+        return {}
+
+    mapping: dict[str, str] = {}
+    remaining = set(code_set)
+
+    try:
+        periods = available_periods()[:max_lookback]
+    except Exception as exc:
+        ec.log_fail("反查可用报告期列表失败", exc)
+        periods = []
+
+    for period in periods:
+        if not remaining:
+            break
+        fp = None
+        try:
+            fp = load_period(period)
+        except Exception as exc:
+            ec.log_fail(f"加载报告期 {period} 失败", exc)
+            continue
+
+        if fp is None or not fp.by_code:
+            continue
+
+        matched = remaining.intersection(fp.by_code.keys())
+        for c in matched:
+            mapping[c] = period
+        remaining -= matched
+
+    return mapping

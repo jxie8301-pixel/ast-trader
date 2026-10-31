@@ -13,34 +13,54 @@ AST-Trader 采用 **「自底向上、确定性量化、因果闭环」** 的多
 ```mermaid
 flowchart TD
     subgraph 数据底座层 [Data Layer]
+        TH[tdx_hosts 7709 主站四级优先级与容灾] --> D1
         D1[通达信行情/L2微观挂单 eltdx] --> DC[EltdxCollector 统一数据采集]
-        D2[财务三表与F10高管质押] --> DC
+        D2[财务三表与F10概念/减持/违规处罚] --> DC
         D3[龙虎榜与外部补充源] --> DC
+        D4[定期报告与公告 PDF 语料] --> DC
         DC --> DH[DataHealthTracker 异常捕获与缺口审计]
     end
 
     subgraph 核心计算与特征层 [Core Engine]
-        DC --> C1[11 会计审计排雷引擎 AuditEngine]
+        DC --> C1[12 个会计审计排雷模型 AuditEngine]
         DC --> C2[衍生财务指标 DerivedMetricsCalculator]
         DC --> C3[反向DCF/SOTP估值双锚 Derivation]
         DC --> C4[主力7阶段状态机 MainForceEngine]
         DC --> C5[L2聪明钱Q因子与微观防伪 Microstructure]
         DC --> C6[大盘宏观状态与投机闸门 MacroRegimeEngine]
         DC --> C7[涨停天梯与题材主线 LadderAnalyzer]
+        DC --> C8[24 大游资战法画像 YouziPersonas + SeatMatcher 席位匹配]
+        DC --> C9[杀猪盘 8 维舆情雷达 TrapDetector]
+        DC --> C10[短线博弈量价 GameFeatures / 资金矩阵 CapitalMatrix / 投资者结构 InvestorPanel]
+        DC --> C11[行业准入识别器 Industry（当前仅「金融 / 未分类」）]
     end
 
     subgraph 决断合成层 [Judgment & Lint]
-        C1 & C2 & C3 & C4 & C5 & C6 & C7 --> JC[JudgmentChainRunner 五维买方决断中枢]
+        C1 & C2 & C3 & C4 & C5 & C6 & C7 & C8 & C9 & C10 & C11 --> JC[JudgmentChainRunner 五维买方决断中枢]
         DH --> JC
-        JC --> VL[LintValidator 质量门控与算术机检 (叶子层)]
-        VL -->|一票否决/强制封顶| CARD[决断卡结构 Decision Card]
+        JC --> EP[ExecutionPlaybook T+1 持币/持股双轨作战剧本]
+        AIC[AI 语义协处理器 core/ai_coprocessor 单向阀] -.->|只加风险/只能降级, 默认关闭| JC
+        JC --> VL[LintValidator 质量门控与算术机检 (叶子层, 16 条规则)]
+        VL -->|以纠代抛: 降级观察 + 仓位清零| CARD[决断卡结构 Decision Card]
+        CARD --> SV[JSON-Schema 契约校验 Draft202012Validator]
     end
 
     subgraph 表现输出层 [Presentation Layer]
-        CARD --> TV[Rich 终端彩色卡片]
-        CARD --> HR[单文件独立响应式 HTML 研报]
+        CARD --> PL[PlainLanguage 白话翻译 (只读, 绝不回写决断卡)]
+        PL --> TV[Rich 终端彩色卡片]
+        PL --> HR[单文件独立响应式 HTML 研报]
     end
 ```
+
+> ⚠️ **数据源现实（切勿按图索骥）**：`eltdx` F10 **无控股股东股权质押通道**、
+> **无公司业绩预告通道**。`pledge_ratio` 恒为 `None`、`gov["forecast"]` 无生产者，
+> 故 `PLEDGE_FATAL_RATIO`（>70% 致命）与 `FORECAST_DROP_FATAL_RATIO`（腰斩致命）
+> 两条排雷规则在真实跑批中**恒定不触发**，属「规则就绪但数据源断流」。
+> 现行替代维度：监管违规处罚记录 + 「未核验即降权」。
+>
+> ⚠️ **架构图留白**：行业/板块相对强弱（`core/sector_rs.py`）、龙虎榜协同图谱
+> （`core/lhb_synergy.py`）、实盘回测（`screener/backtester.py`）均未实施，
+> 详见 `docs/UNIMPLEMENTED_WORKLIST.md`。
 
 ### 核心设计原则：
 1. **纯确定性与零幻觉**：计算逻辑、财务指标、盘口因子与估值双锚全部由 Python 本地代码计算，杜绝大模型在数值计算上的幻觉与前后矛盾。
@@ -57,7 +77,7 @@ flowchart TD
    * 致命审计红旗具备绝对一票否决权，不可被任何题材或连板所稀释。
 4. **单向依赖与高内聚解耦**：
    * `lint/` 作为纯叶子层，严禁反向依赖 `core/` 业务逻辑；
-   * `JudgmentChainRunner` 将庞大的流水线解耦拆分为 5 大支柱独立装配器（`_build_pillar_1` ~ `_build_pillar_4`）与纯决策函数（`_decide_gear`），杜绝上帝方法。
+   * `JudgmentChainRunner` 将庞大的流水线解耦拆分为 **6 个独立装配方法** —— 4 大支柱装配器（`_build_pillar_1_quality` ~ `_build_pillar_4_path`）、纯决策函数（`_decide_gear`）与装配+门控（`_assemble_and_lint_card`），杜绝上帝方法。
 
 ---
 
@@ -168,4 +188,10 @@ flowchart TD
 
 1. **执行速度**：单股全套深度体检与 15+ 接口采集装配 $\le 2.0$ 秒；全市场漏斗筛选 $\le 15$ 秒。
 2. **内存消耗**：常驻运行内存 $< 500\text{MB}$，无重度外部依赖或后台常驻守护大模型。
-3. **可维护性与测试覆盖**：全套自动化测试套件共 74 项单元与集成测试，覆盖审计排雷、降级风控、状态机持久化、算术自检与质量机检，100% 全绿通过。
+3. **可维护性与测试覆盖**：全套自动化测试套件共 **558 项**单元与集成测试（537 项离线 + 21 项 `seednet` 联网种子跑批），覆盖审计排雷、降级风控、状态机持久化、算术自检、数据纪律围栏与质量机检，100% 全绿通过。
+   * **质量门控规则覆盖**：`lint/validator.py` 实装 **R1 / R2 / R3 / R4 / R5 / R7 / R8 / R9 / R10 / R11 / R12 / R13 / R14 / R15 / R16 / R18 共 16 条**。
+     * 硬编码 `fail` 级 7 条：R7 / R8 / R9 / R10 / R11 / R12 / R13；
+     * 其余 9 条默认 `warn`，由 `config.LINT_RULE_SEVERITY` 控制（R15 已转 `fail`）。误报代价高于漏报，故新增规则一律先 warn 观察一个周期。
+     * ★ 更正历史结论：此前本文件写「R1~R6 在任何需求文档中均无内容定义」经核对**不成立** —— 上游 `lint_v8.py` 的 R1~R6 均有实现，是移植遗漏而非上游未定义。R6（外链引用，本项目无 md 互引形态）与 R17（已兑现倍数，风控意图已由 R12 覆盖）刻意不移植。
+   * **会计审计模型数**：`core/audit_engine.py` 实装 **12 个** `_check_*`（Piotroski / Beneish / Altman / DuPont / Buffett 质量 / 投资收益侵蚀 / Sloan / 治理 / 股东户数 / 业绩预告 / 估值透支 / 关联方敞口），比 SRS FR-02 列举的 11 项多出 **DuPont**。
+   * **判断链装配方法**：`core/judgment_chain.py` 为 **6 个**独立装配方法 —— `_build_pillar_1_quality` / `_2_state` / `_3_odds` / `_4_path` / `_decide_gear` / `_assemble_and_lint_card`。

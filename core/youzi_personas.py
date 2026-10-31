@@ -150,6 +150,12 @@ def extract_tape_features(
     theme_info: dict[str, Any] | None = None,
     governance_risk: bool = False,
     hard_event: bool = False,
+    # ★ 20261029 审计 P1-8：市场级 risk_off（退潮/冰点）与"样本量是否充足"
+    #   由调用方传入真实观测值；传不进来就是 `None`（弃权），**绝不默认 False** ——
+    #   旧实现恒为 False 等于永远声称"市场没有风险、样本永远够"，这两个判据
+    #   在 24 个游资画像里因此从未真正生效过。
+    market_risk_off: bool | None = None,
+    sample_low: bool | None = None,
 ) -> dict[str, bool | None]:
     """提取真实盘口博弈特征 (全面对齐 UZI 盘面微观特征集)。"""
     theme = theme_info or {}
@@ -159,8 +165,13 @@ def extract_tape_features(
     high = quote.get("high", price)
     open_p = quote.get("open", price)
     pre_close = quote.get("pre_close", price)
-    turnover = quote.get("turnover_ratio", 3.0)
-    vol_ratio = momentum.get("volume_ratio", 1.0)
+    # ★ 20261029 审计 P1-8：换手率旧默认 3.0 —— 那是"凭空捏造的活跃度"，
+    #   取不到就按 3.0 算，等于默认每只票都够活跃。现改为可缺失（None = 弃权）。
+    turnover = quote.get("turnover_ratio")
+    # ★ 量比改成「可缺失」语义。此前调用方把 volume_ratio 硬编码成 1.5（伪装成真实
+    #   量比的假数据），且本函数对 None 会直接抛 TypeError（``None >= 1.2``）。
+    #   现改为：量比不可核验时判据**弃权**——``active`` 只看换手率，不再拿假量比凑数。
+    vol_ratio = momentum.get("volume_ratio")
     is_bull = momentum.get("is_bullish_ma", False)
     concepts = theme.get("concepts", [])
 
@@ -169,42 +180,60 @@ def extract_tape_features(
     near_high = bool(high and price >= high * 0.985)
     reversal = bool(open_p and pre_close and open_p < pre_close and change_pct > 1.0)
 
-    # 严格杜绝无题材/概念为空时的默认值造假
+    # ★ 20261029 审计 P1-8：旧实现在无题材/概念为空时给 `leader_rank` 默认 1（= 自封龙头）、
+    #   `breadth_pct` 默认 65.0（= 自封题材热度）—— 全是"没有数据就编一个好看的"。
+    #   现一律取不到即 `None`（弃权）：龙头位与题材热度必须是**观测到的**，不能是假定的。
     has_theme = bool(concepts) or bool(theme.get("has_theme"))
-    leader_rank = theme.get("leader_rank", 1 if has_theme else 999)
-    breadth_pct = theme.get("breadth_pct", 65.0 if has_theme else 0.0)
+    leader_rank = theme.get("leader_rank")
+    breadth_pct = theme.get("breadth_pct")
     fresh_theme = bool(theme.get("fresh_theme", has_theme))
 
-    cap_val = market_cap if market_cap > 0 else (price * 1e8)
+    # ★ 市值同理：旧实现 ``price * 1e8`` 是用股价反推市值的**凭空造数**
+    #   （10 元股价 → 一律假设 10 亿市值），让"小市值偏好"判据永远成立。
+    cap_val = float(market_cap) if market_cap and market_cap > 0 else None
 
     # 区分主板 (10%) 与双创板 (20%) 弹性空间
     ts_code = str(quote.get("ts_code", ""))
-    is_gem_or_star = ts_code.startswith(("300", "301", "688"))
-    limit_pct = 20.0 if is_gem_or_star else 10.0
+    # ★ 20261029 审计 P1-12：补 302 / 689（深市 302、沪市 689 是真实存在的双创代码段，
+    #   漏了会把它们的涨跌停空间按主板 10% 算，弹性与空间板判定全错）。
+    is_gem_or_star = ts_code.startswith(("300", "301", "302", "688", "689"))
+    # 北交所 30%（8/4/920 段）
+    if ts_code.startswith(("8", "4", "920")):
+        limit_pct = 30.0
+    else:
+        limit_pct = 20.0 if is_gem_or_star else 10.0
 
     return {
         "illiquid": amount < 2e8,
         "capacity": amount >= 10e8,
-        "active": turnover >= 3.0 or vol_ratio >= 1.2,
+        # ★ 换手率/量比双双不可核验 → ``active`` 弃权（None），不拿默认值凑数
+        "active": (
+            None
+            if turnover is None and vol_ratio is None
+            else ((turnover is not None and turnover >= 3.0)
+                  or (vol_ratio is not None and vol_ratio >= 1.2))
+        ),
         "trend_up": is_bull,
         "strong": change_pct >= (limit_pct * 0.4),
         "extended": change_pct >= (limit_pct * 0.95),
         "not_extended": change_pct < (limit_pct * 0.7),
         "near_high": near_high,
         "reversal": reversal,
-        "leader": leader_rank <= 2 if has_theme else False,
-        "laggard": leader_rank > 5 if has_theme else True,
-        "theme_hot": breadth_pct >= 55.0 if has_theme else False,
-        "breadth": breadth_pct >= 65.0 if has_theme else False,
-        "isolated": breadth_pct < 40.0 if has_theme else True,
+        # ★ 龙头位/题材热度取不到 → None（弃权），不再"自封龙头 / 自封热度"
+        "leader": (leader_rank <= 2) if (has_theme and leader_rank is not None) else None,
+        "laggard": (leader_rank > 5) if (has_theme and leader_rank is not None) else None,
+        "theme_hot": (breadth_pct >= 55.0) if (has_theme and breadth_pct is not None) else None,
+        "breadth": (breadth_pct >= 65.0) if (has_theme and breadth_pct is not None) else None,
+        "isolated": (breadth_pct < 40.0) if (has_theme and breadth_pct is not None) else None,
         "fresh_theme": fresh_theme,
         "stale_theme": not fresh_theme,
-        "small_cap": 0 < cap_val <= 100e8,
-        "mid_cap": 20e8 <= cap_val <= 800e8,
-        "large_cap": cap_val > 800e8,
+        # ★ 市值未知 → None（弃权），不再用 ``price * 1e8`` 反推
+        "small_cap": (0 < cap_val <= 100e8) if cap_val is not None else None,
+        "mid_cap": (20e8 <= cap_val <= 800e8) if cap_val is not None else None,
+        "large_cap": (cap_val > 800e8) if cap_val is not None else None,
         "low_price": price <= 20.0,
         "low_position": not is_bull,
-        "crowded": turnover >= 12.0 or change_pct >= (limit_pct * 0.9),
+        "crowded": (turnover is not None and turnover >= 12.0) or change_pct >= (limit_pct * 0.9),
         "climax": change_pct >= (limit_pct * 0.95),
         "hard_event": hard_event and has_theme,
         "priced_in": change_pct >= (limit_pct * 0.8) and hard_event,
@@ -212,11 +241,15 @@ def extract_tape_features(
         "fake_ai": ai_chain and not hard_event,
         "fundamental_proxy": hard_event and has_theme,
         "governance_risk": governance_risk,
-        "competition": breadth_pct > 80.0 and leader_rank > 2,
+        "competition": bool(
+            breadth_pct is not None and leader_rank is not None
+            and breadth_pct > 80.0 and leader_rank > 2
+        ),
         "failed_acceleration": change_pct < 2.0 and not near_high,
         "breakdown": change_pct < -2.0,
-        "risk_off": False,
-        "sample_low": False,
+        # ★ 由调用方给出真值；None = 不可核验（弃权），不再是恒 False 的假事实
+        "risk_off": market_risk_off,
+        "sample_low": sample_low,
         "_market_cap": cap_val,
     }
 

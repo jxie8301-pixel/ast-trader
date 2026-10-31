@@ -1,0 +1,88 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "decision_card.schema.json",
+  "title": "AST-Trader 决断卡契约",
+  "description": "五支柱决断卡的结构契约。★ 刻意不在 Schema 里写死业务阈值（如仓位上限 0.20/0.25）——那属于 config.py 与 Lint R12 的职责；此处只做结构合法性校验，避免阈值双写（双写本身就是对『数字唯一出处』的违反）。",
+  "type": "object",
+  "required": [
+    "ticker",
+    "trade_date",
+    "price",
+    "decision_gear",
+    "position_cap",
+    "quality_verdict",
+    "state_verdict",
+    "odds_verdict",
+    "path_verdict",
+    "invalidation_line",
+    "pillar_5_decision",
+    "sub_verdicts_quality"
+  ],
+  "properties": {
+    "ticker": { "type": "string", "pattern": "^[0-9]{6}(\\.(SH|SZ|BJ))?$" },
+    "name": { "type": "string" },
+    "trade_date": { "type": "string", "pattern": "^[0-9]{8}$" },
+    "price": { "type": "number", "exclusiveMinimum": 0 },
+    "pct_chg": { "type": ["number", "null"] },
+    "total_mv": { "type": ["number", "null"] },
+    "circ_mv": { "type": ["number", "null"] },
+    "turnover_ratio": { "type": ["number", "null"] },
+
+    "decision_gear": { "type": "string", "minLength": 1 },
+    "decision_title": { "type": "string" },
+    "position_cap": { "type": "number", "minimum": 0, "maximum": 1 },
+    "invalidation_line": { "type": "string", "minLength": 1 },
+    "critical_wait": { "type": "string" },
+    "core_contradiction": { "type": "string" },
+    "action_tactic": { "type": "string" },
+
+    "quality_verdict": { "$ref": "common.schema.json#/$defs/quality_verdict" },
+    "state_verdict": { "$ref": "common.schema.json#/$defs/state_verdict" },
+    "odds_verdict": { "$ref": "common.schema.json#/$defs/odds_verdict" },
+    "path_verdict": { "$ref": "common.schema.json#/$defs/path_verdict" },
+
+    "sub_verdicts_quality": {
+      "type": "array",
+      "minItems": 5,
+      "items": { "$ref": "common.schema.json#/$defs/sub_verdict" }
+    },
+
+    "top3_risks": { "type": "array" },
+    "all_flags": { "type": "array" },
+    "matched_youzi": { "type": "array" },
+    "matched_personas": { "type": "array" },
+    "trap_warnings": { "type": "array" },
+    "anchor_range": { "type": ["object", "null"] },
+    "derivation": { "type": ["object", "null"] },
+    "microstructure": { "type": "object" },
+    "capital_matrix": {
+      "comment": "运行时是 CapitalMatrixResult dataclass，不是 dict；jsonschema 的 object 类型不匹配 dataclass 实例，故刻意不设 type，避免误报。"
+    },
+    "playbook": {
+      "comment": "运行时是 PlaybookResult dataclass，同上不设 type。"
+    },
+    "data_health": { "type": "object" },
+    "ladder_info": { "type": ["object", "null"] },
+
+    "pillar_1_quality": { "type": "string" },
+    "pillar_2_state": { "type": "string" },
+    "pillar_3_odds": { "type": "string" },
+    "pillar_4_path": { "type": "string" },
+    "pillar_5_decision": {
+      "type": "object",
+      "required": ["decision_gear", "position_cap"],
+      "properties": {
+        "decision_gear": { "type": "string", "minLength": 1 },
+        "decision_title": { "type": "string" },
+        "position_cap": { "type": "number", "minimum": 0, "maximum": 1 },
+        "invalidation_line": { "type": "string" },
+        "triad_verdict": { "type": "string" },
+        "three_part_conclusion": { "type": "string" },
+        "action_tactic": { "type": "string" },
+        "core_contradiction": { "type": "string" }
+      },
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": true
+}

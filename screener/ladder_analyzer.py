@@ -59,32 +59,81 @@ class LadderAnalyzer:
     def __init__(self, collector: Any | None = None) -> None:
         self.collector = collector
 
-    def analyze(self) -> tuple[MarketSentimentOverview, dict[str, dict[str, Any]], list[dict[str, Any]]]:
-        """执行天梯分析。
-        
-        返回:
-            (sentiment_overview, stock_theme_map, raw_ladder_rows)
-        """
-        with open_client() as c:
-            lad = c.f10.limit_board_ladder()
-            if not lad or not hasattr(lad, "rows") or not lad.rows:
-                # 默认空结构
-                return MarketSentimentOverview(
-                    trade_date="",
-                    space_board_level=0,
-                    space_board_tickers=[],
-                    ladder_counts={},
-                    promotion_rates={},
-                    total_limit_up_count=0,
-                    sentiment_phase="未知",
-                    strongest_themes=[],
-                    total_limit_down_count=0,
-                    total_broken_count=0,
-                    broken_rate_pct=0.0,
-                    macro_regime_result=None,
-                ), {}, []
+    def _eval_macro(self, trade_date: str, temp_ov: Any) -> Any:
+        try:
+            from core.macro_regime import MacroRegimeEngine
+            from data.eltdx_collector import EltdxCollector
+            coll = self.collector or EltdxCollector()
+            daily_idx = coll.get_daily("sh000001", count=30)
+            stat_dict = coll.get_market_breadth()
+            if not trade_date and daily_idx is not None and not daily_idx.empty and "trade_date" in daily_idx.columns:
+                trade_date = str(daily_idx.iloc[0]["trade_date"])
+            if getattr(temp_ov, "total_limit_up_count", 0) == 0 and stat_dict:
+                if stat_dict.get("limit_up_count"):
+                    temp_ov.total_limit_up_count = int(stat_dict["limit_up_count"])
+                if stat_dict.get("limit_down_count"):
+                    temp_ov.total_limit_down_count = int(stat_dict["limit_down_count"])
+            engine = MacroRegimeEngine()
+            return engine.evaluate(
+                trade_date=trade_date or "",
+                index_daily_df=daily_idx,
+                market_stat_dict=stat_dict,
+                ladder_overview=temp_ov,
+            )
+        except Exception as e:
+            logger.warning("宏观大盘周期评估异常: %s: %s", type(e).__name__, e, exc_info=True)
+            return None
 
-        raw_rows = []
+    def analyze(self) -> tuple[MarketSentimentOverview, dict[str, dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+        """执行天梯分析。
+
+        返回:
+            (sentiment_overview, stock_theme_map, raw_ladder_rows, raw_broken_rows)
+
+        ★ 第二批改造：``broken_rows``（当日炸板/烂板）此前被算进情绪统计后**随即丢弃**，
+          ``analyze()`` 只返回封板行。而"弱转强"必须以"弱"为前提 —— 一个纯粹由完好
+          封板涨停构成的池子里，物理上不存在弱转强的逻辑条件。按 20261028 炸板率
+          49.6% 反解，约 **70 只**炸板标的每天被白白丢掉。现在一并返回，供轨道 B 使用。
+        """
+        lad = None
+        try:
+            with open_client() as c:
+                lad = c.f10.limit_board_ladder()
+        except Exception as e:
+            logger.warning("获取连板天梯数据失败 (网络或接口异常: %s)", e)
+
+        if not lad or not hasattr(lad, "rows") or not lad.rows:
+            # ★ 20261030 修复 N-1 (P0-1残余)：连板天梯为空时不提前退出，大盘日线与全市场广度照样评估
+            trade_date = getattr(lad, "trade_date", "") or ""
+            empty_ov = type("TempOverview", (), {
+                "space_board_level": 0,
+                "space_board_tickers": [],
+                "total_limit_up_count": 0,
+                "total_limit_down_count": 0,
+                "total_broken_count": 0,
+                "broken_rate_pct": 0.0,
+            })()
+            macro_result = self._eval_macro(trade_date, empty_ov)
+            if not trade_date and macro_result is not None:
+                trade_date = getattr(macro_result, "trade_date", "") or ""
+            phase = macro_result.macro_regime_label if macro_result else "未知"
+            return MarketSentimentOverview(
+                trade_date=trade_date,
+                space_board_level=0,
+                space_board_tickers=[],
+                ladder_counts={},
+                promotion_rates={},
+                total_limit_up_count=int(getattr(empty_ov, "total_limit_up_count", 0) or 0),
+                sentiment_phase=phase,
+                strongest_themes=[],
+                total_limit_down_count=int(getattr(empty_ov, "total_limit_down_count", 0) or 0),
+                total_broken_count=0,
+                broken_rate_pct=0.0,
+                macro_regime_result=macro_result,
+            ), {}, [], []
+
+        raw_rows: list[dict[str, Any]] = []
+        raw_broken_rows: list[dict[str, Any]] = []
         ladder_counts: dict[int, int] = defaultdict(int)
         for k, v in (lad.ladder_counts or {}).items():
             if k is not None:
@@ -153,6 +202,23 @@ class LadderAnalyzer:
             theme_key = row_dict["limit_reason"]
             theme_groups[theme_key].append(row_dict)
 
+        # ── 导出炸板/烂板行（轨道 B 的"弱"之来源）────────────────────
+        # 炸板行没有 board_level 语义（未封住），统一记为 0 板，
+        # 并保留其题材原因与开板次数，供轨道 B 判断"炸板后是否属健康回踩"。
+        for r in broken_rows:
+            raw_broken_rows.append({
+                "code": getattr(r, "code", ""),
+                "full_code": getattr(r, "full_code", ""),
+                "name": getattr(r, "name", ""),
+                "board_level": 0,
+                "broken_count": int(getattr(r, "broken_count", 0) or 0),
+                "seal_amount": float(getattr(r, "seal_amount", 0.0) or 0.0),
+                "limit_time": getattr(r, "limit_time", None) or "",
+                "limit_reason": (getattr(r, "limit_reason", None) or getattr(r, "industry", None) or "未知题材").strip(),
+                "industry": (getattr(r, "industry", None) or "其他").strip(),
+                "highest_board_level": int(getattr(r, "highest_board_level", 0) or 0),
+            })
+
         # 查找空间板标的
         for r in raw_rows:
             if r["board_level"] == space_board_level and space_board_level > 1:
@@ -196,33 +262,17 @@ class LadderAnalyzer:
             phase = "震荡轮动期"
 
         # ─── 接入多维宏观大盘与全市场情绪量化引擎 (解耦大盘与个股) ───
-        macro_result = None
-        try:
-            from core.macro_regime import MacroRegimeEngine
-            from data.eltdx_collector import EltdxCollector
-            coll = self.collector or EltdxCollector()
-            daily_idx = coll.get_daily("sh000001", count=30)
-            stat_dict = coll.get_market_breadth()
-
-            engine = MacroRegimeEngine()
-            temp_ov = type("TempOverview", (), {
-                "space_board_level": space_board_level,
-                "space_board_tickers": space_board_tickers,
-                "total_limit_up_count": total_zt,
-                "total_limit_down_count": total_dt,
-                "total_broken_count": total_broken,
-                "broken_rate_pct": broken_rate_pct,
-            })()
-            macro_result = engine.evaluate(
-                trade_date=lad.trade_date or "",
-                index_daily_df=daily_idx,
-                market_stat_dict=stat_dict,
-                ladder_overview=temp_ov,
-            )
-            if macro_result:
-                phase = macro_result.macro_regime_label
-        except Exception as e:
-            logger.warning("宏观大盘周期评估异常: %s: %s", type(e).__name__, e, exc_info=True)
+        temp_ov = type("TempOverview", (), {
+            "space_board_level": space_board_level,
+            "space_board_tickers": space_board_tickers,
+            "total_limit_up_count": total_zt,
+            "total_limit_down_count": total_dt,
+            "total_broken_count": total_broken,
+            "broken_rate_pct": broken_rate_pct,
+        })()
+        macro_result = self._eval_macro(lad.trade_date or "", temp_ov)
+        if macro_result:
+            phase = macro_result.macro_regime_label
 
         overview = MarketSentimentOverview(
             trade_date=lad.trade_date or "",
@@ -255,4 +305,4 @@ class LadderAnalyzer:
                     "limit_time": m["limit_time"],
                 }
 
-        return overview, stock_context_map, raw_rows
+        return overview, stock_context_map, raw_rows, raw_broken_rows

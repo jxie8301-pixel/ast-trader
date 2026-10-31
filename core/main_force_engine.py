@@ -127,6 +127,12 @@ class MainForceDecision:
     anti_spoofing: AntiSpoofingAudit
     scores: dict[str, float] = field(default_factory=dict)
     transition_note: str = ""
+    #: 相对化基线指标（**相对标的自身**的量，不是绝对值）。
+    #: 供 AI 判断层做阶段定性校验 —— 绝对成交额/绝对涨幅在市值与波动特性
+    #: 不同的标的间不可比，判断「枯竭」「显著涨跌」必须用相对基线：
+    #:   vol_ratio_20d      当日成交额 ÷ 近20日均量（判断枯竭 vs 放量）
+    #:   avg_amplitude_5d   5日平均振幅（该股自身波动基线，判断涨跌是否显著）
+    baselines: dict[str, float] = field(default_factory=dict)
 
 
 class MainForceStateEngine:
@@ -204,7 +210,12 @@ class MainForceStateEngine:
 
         # ─── 1. 基础特征提取与防御性默认值 ───
         pct_chg = float(quote.get("pct_chg", 0.0) or 0.0)
-        turnover = float(quote.get("turnover", 0.0) or 0.0)
+        # ★ P0-3（20261029 审计）：生产 quote（eltdx_collector.get_realtime_quote）只有
+        #   ``turnover_ratio`` 键，从未有过 ``turnover`` —— 旧代码读 ``turnover`` 恒得
+        #   0.0，导致 STAGE_4/5/7 的全部换手率判据（:475/:658/:672/:694/:754-757）
+        #   永不触发，主力阶段置信度被系统性虚增（001225 实测 72.5% vs 正确 42.5%）。
+        #   单测此前也用错误键名喂引擎，因此 591 个测试全绿却从未真正测过这条路径。
+        turnover = float(quote.get("turnover_ratio") or 0.0)
         open_price = float(quote.get("open", current_price) or current_price)
         high_price = float(quote.get("high", current_price) or current_price)
         low_price = float(quote.get("low", current_price) or current_price)
@@ -330,9 +341,25 @@ class MainForceStateEngine:
             audit=audit,
         )
 
+        # ★★ 置信度不足时不得用确定性口吻给阶段定性。
+        #
+        # 旧逻辑直接取 argmax 输出阶段名：科达利置信度仅 49.5%（各阶段
+        # 势均力敌、实为多空过渡区），报告却赫然写着
+        # 「【📉 无抵抗阴跌出清期 (流动性枯竭)】」—— 语气极其确定，
+        # 这是"用不确定的数据下确定的结论"，也是本次评审最尖锐的批评。
+        #
+        # 修正：置信度 < 55 时保留最高分倾向作为参考（不丢信息），
+        #       但阶段名显式改为「方向未定」，不再冒充定性结论。
+        stage_name = meta["stage_name"]
+        if final_confidence < 55.0 and "UNVERIFIED" not in str(final_stage_code):
+            stage_name = (
+                f"【⚠️ 方向未定 · 多空过渡】(最高分倾向: {meta['stage_name']}，"
+                f"置信度仅 {final_confidence:.1f}%，不足以定性)"
+            )
+
         return MainForceDecision(
             stage_code=final_stage_code,
-            stage_name=meta["stage_name"],
+            stage_name=stage_name,
             confidence=final_confidence,
             is_transitional=is_transitional,
             suggested_pos_cap=meta["suggested_pos_cap"],
@@ -343,6 +370,11 @@ class MainForceStateEngine:
             anti_spoofing=audit,
             scores={k: round(v, 1) for k, v in scores.items()},
             transition_note=transition_note,
+            baselines={
+                "vol_ratio_20d": round(vol_ratio_20d, 2),
+                "avg_amplitude_5d": round(avg_amplitude_5d, 2),
+                "price_position_60d": round(price_position_60d, 3),
+            },
         )
 
     # ─────────────────────────────────────────────────────────────
@@ -716,6 +748,46 @@ class MainForceStateEngine:
         # 扣分：若均线多头且处于主升通道
         if is_bullish_ma and current_price > ma20 and overhead_chips < 30.0:
             s7 -= 50.0
+
+        # 扣分：若盘口存在主动承接（聪明钱主动买盘显著且价格获得知情均线支撑），非「无抵抗」
+        if smart_buy_ratio >= 55.0 and current_price >= smart_vwap:
+            s7 -= 35.0
+        elif smart_buy_ratio > smart_sell_ratio:
+            s7 -= 15.0
+
+        # 扣分：若换手充沛成交活跃，非「流动性枯竭」
+        turnover_val = float(turnover or 0.0)
+        if turnover_val >= 3.0:
+            s7 -= 25.0
+        elif turnover_val >= 2.0:
+            s7 -= 10.0
+
+        # ★★ 定义性前提校验（**否决项**，而非加分项）
+        #
+        # 「无抵抗阴跌出清 / 流动性枯竭」的语义由三个定义特征构成：
+        #   ① 价格在跌（阴跌） ② 成交枯竭（流动性） ③ 无主动承接（无抵抗）
+        #
+        # 旧逻辑把三者全部做成**加分项**，导致一条都不满足也能判该阶段：
+        #   科达利 002850 实跑 —— 当日 +7.44%、买盘 59.8% > 卖盘 40.2%、
+        #   现价站上知情均线 9.7%，三条定义特征**全部不成立**，
+        #   却仅凭「套牢盘 64.1%」一项 (+30) 以 50 分胜出判为 STAGE_7。
+        #   更致命的是唯一扣分路径要求 overhead_chips < 30.0，
+        #   使得套牢盘 ≥30% 的票**永远无法被扣分** ——
+        #   无论当日涨势多强、承接多好都逃不掉「流动性枯竭」的定性。
+        #
+        # ★★ 阶段定性的**自洽性校验**已移出本函数，交由 AI 判断层完成
+        #    （模块 `mainforce`，判据见 `core/ai_coprocessor/prompts/mainforce.md`）。
+        #
+        #    原因：本函数此前用固定阈值做校验（`pct_chg > 3.0`、量比 ≥1.2 等），
+        #    而绝对/半绝对阈值在**不同市值、不同波动特性**的标的间不可比 ——
+        #    15 亿成交额对 466 亿市值的科达利是放量，对 2 万亿的茅台是萎缩；
+        #    +7.44% 对低波动大盘股是极端事件，对高波动小盘股属日常噪音。
+        #    这类"该不该判为某阶段"的定性权衡，正是上游交给 LLM 的部分
+        #    （上游范式：脚本算数值，LLM 做定性判断）。
+        #
+        #    本函数只负责**算出分数**（可复现、可测试），
+        #    定性校验由 AI 通过「红旗提名」单向阀表达，且失败即弃权回退。
+
         scores[StageCode.STAGE_7_PASSIVE_DRIFT.value] = max(0.0, min(100.0, s7))
 
         return scores
@@ -750,6 +822,32 @@ class MainForceStateEngine:
             self._save_history_state()
             note = f"⚠️ 触发高危派发快速熔断：由前序状态 [{prior_stage.name}] 瞬时切换至出货派发期。"
             return StageCode.STAGE_6_DISTRIBUTION, note
+
+        # 规则 1b: 派发/阴跌熔断的**反向解禁** —— 与规则 1 的瞬时熔断对称。
+        #
+        # ★ 缺口（F-11）：规则 1 允许"瞬时切入" STAGE_6，但原逻辑**没有对称的
+        #   退出规则**。更糟的是，若本周期候选转为 STAGE_4/5，会先落到规则 2，
+        #   而规则 2 的 fallback 是 ``... else prior_stage`` —— 即**回落回
+        #   STAGE_6**，把 0 仓位熔断状态卡死，即使资金面已经反转。
+        #
+        #   这正是第三方评审所说"用某一天的筹码分布去推演接下来逢反抽清仓"
+        #   的机理：结论一旦落到熔断档就缺乏自行解除的通道。
+        #
+        # ★ 为何不加迟滞：进入侧（规则 1）是瞬时的，若退出侧反而加确认门槛，
+        #   会造成"进得快、出得慢"的不对称，让仓位长期被压在 0。故此处
+        #   同样瞬时解禁，但要求**候选确实已不属于熔断两档**。
+        if prior_stage in (StageCode.STAGE_6_DISTRIBUTION, StageCode.STAGE_7_PASSIVE_DRIFT) and candidate_stage not in (
+            StageCode.STAGE_6_DISTRIBUTION,
+            StageCode.STAGE_7_PASSIVE_DRIFT,
+        ):
+            self._history_state[ticker] = (candidate_stage, 1)
+            self._save_history_state()
+            note = (
+                f"✅ 派发风险解除（反向解禁）：由熔断档 [{prior_stage.name}] 退出至 "
+                f"[{candidate_stage.name}]，仓位上限已恢复。"
+                f"原熔断结论仅对前一交易日有效，不作为跨日持仓依据。"
+            )
+            return candidate_stage, note
 
         # 规则 2: 主升/加速确认迟滞 (Hysteresis for Markups)
         # 若从非主升阶段跨入主升 (Stage 4) 或加速 (Stage 5)，需满足：
@@ -809,7 +907,8 @@ class MainForceStateEngine:
                 "recommended_action": "【左侧轻仓逢低分批潜伏】",
                 "decision_gear_override": None,
                 "behavior_desc": (
-                    f"股价处于 60 日底部安全吸筹区 (分位 {price_position_60d*100:.0f}%)，微观高效率买盘占比 {smart_buy_ratio:.1f}%；"
+                    f"股价处于 60 日底部安全吸筹区 (分位 {price_position_60d*100:.0f}%)，"
+                    f"微观高效分钟买盘占比 {smart_buy_ratio:.1f}%（分钟 K 线口径，非逐笔主动方向）；"
                     f"主力利用算法小单在水下箱体隐蔽吸纳筹码，未引起表面成交量异动，知情底仓成本锁定在 {smart_vwap:.2f} 元附近。"
                 ),
                 "risk_alert": "吸筹周期耗时漫长且常伴随磨人假摔洗盘，若有效跌破箱体下沿或放量杀跌，需暂停建仓并止损防守。",
@@ -838,7 +937,7 @@ class MainForceStateEngine:
                     f"股价在均线支撑上方窄幅整理，振幅极度收敛且成交量持续衰竭；"
                     f"主力以时间换空间耐心清洗浮动获利盘，上方套牢盘快速沉淀降至 {overhead_chips:.1f}%，筹码结构扎实健康。"
                 ),
-                "risk_alert": "若向下放量击穿 20 日生命均线或知情均线 ({smart_vwap:.2f}元)，则洗盘蓄势宣告失败，立即转入防守。",
+                "risk_alert": f"若向下放量击穿 20 日生命均线或知情均线 ({smart_vwap:.2f}元)，则洗盘蓄势宣告失败，立即转入防守。",
             }
 
         elif stage_code == StageCode.STAGE_4_HEALTHY_MARKUP:
@@ -849,7 +948,9 @@ class MainForceStateEngine:
                 "decision_gear_override": None,
                 "behavior_desc": (
                     f"日线均线呈典型多头排列，量价良性配合脱离建仓成本区；"
-                    f"微观知情资金主动买盘比达 {smart_buy_ratio:.1f}% 且通过对倒与假突破反伪装验证，属于资金合力驱动的健康主升浪。"
+                    f"微观知情资金分钟口径买盘占比达 {smart_buy_ratio:.1f}%（★ 分钟 K 线口径，"
+                    f"非逐笔主动买卖方向，见 microstructure.smart_flow_basis）且通过对倒与假突破反伪装验证，"
+                    f"属于资金合力驱动的健康主升浪。"
                 ),
                 "risk_alert": "防范冲高遇阻产生日线顶背离；严格执行 A 股 T+1 纪律，次日若收盘跌破 5 日线启动部分止盈防守。",
             }
@@ -897,14 +998,54 @@ class MainForceStateEngine:
             }
 
         else:  # STAGE_7_PASSIVE_DRIFT
+            # ★★ 修复：价格关系与资金方向必须由**数值派生**，不得模板硬编码。
+            #
+            # 原文案无条件写「现价显著跌破知情均线」，但 STAGE_7 判定里
+            # 「跌破知情均线」只是 15 分的**加分项**（见本文件 :710-711），
+            # 并非必要条件。科达利靠「套牢盘 64.1%」(+30 分) 达标，现价
+            # 162.98 反而**高于**知情均线 148.52 —— 报告却写着「显著跌破」，
+            # 与同一段落里的数字直接冲突。
+            if smart_vwap > 0:
+                if current_price < smart_vwap * 0.97:
+                    price_rel = (
+                        f"现价 ({current_price:.2f}元) 显著跌破知情均线 ({smart_vwap:.2f}元)"
+                    )
+                elif current_price > smart_vwap * 1.03:
+                    # ★ 措辞不得出现「跌破」二字，否则与\"已站上\"自相冲突
+                    #   （且会让\"是否破位\"的文本检索失效）。
+                    price_rel = (
+                        f"现价 ({current_price:.2f}元) 已站上知情均线 ({smart_vwap:.2f}元) "
+                        f"{(current_price / smart_vwap - 1.0) * 100:.1f}%，"
+                        f"知情资金整体处浮盈状态，并未处于破位情形"
+                    )
+                else:
+                    price_rel = (
+                        f"现价 ({current_price:.2f}元) 贴近知情均线 ({smart_vwap:.2f}元)"
+                    )
+            else:
+                price_rel = f"知情均线未核验，现价 {current_price:.2f}元"
+
+            # ★ 与反伪装模块（:432-441）取**同一真值源**：买/卖占比谁大。
+            #   避免"反伪装说接力(买)、这里说派发(卖)"的自相矛盾。
+            if smart_sell_ratio > smart_buy_ratio:
+                flow_desc = (
+                    f"微观卖盘占比 {smart_sell_ratio:.1f}% 高于买盘 {smart_buy_ratio:.1f}%，"
+                    f"场内缺乏主动承接，呈现单边被动弱势漂移"
+                )
+            else:
+                flow_desc = (
+                    f"微观买盘占比 {smart_buy_ratio:.1f}% 仍高于卖盘 {smart_sell_ratio:.1f}%，"
+                    f"尚存增量承接迹象 —— 与「完全无抵抗出清」的定性并不一致"
+                )
+
             return {
                 "stage_name": "【📉 无抵抗阴跌出清期 (流动性枯竭)】",
                 "suggested_pos_cap": 0.0,
                 "recommended_action": "【空仓观望 / 绝不左侧接飞刀】",
                 "decision_gear_override": "观察",
                 "behavior_desc": (
-                    f"上方沉淀解套抛压沉重 (套牢盘高达 {overhead_chips:.1f}%)，现价显著跌破知情均线 ({smart_vwap:.2f}元)；"
-                    f"场内机构放弃护盘抵抗，微观呈现单边被动弱势漂移，缺乏增量大资金主动承接。"
+                    f"近60日价格分布上方成交占比高达 {overhead_chips:.1f}% (量能代理，非真实筹码分布)，{price_rel}；"
+                    f"{flow_desc}。"
                 ),
                 "risk_alert": "严禁任何主观臆测抄底！在未见机构放量长阳突破 5 日线形成底分型企稳前，盲目入场极易被深套磨损本金。",
             }

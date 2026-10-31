@@ -27,6 +27,7 @@ logging.basicConfig(
     encoding="utf-8",
 )
 
+from core.analyzer import SingleStockAnalyzer
 from core.audit_engine import AuditEngine
 from core.game_features import GameFeatureExtractor
 from core.judgment_chain import JudgmentChainRunner
@@ -44,119 +45,96 @@ from screener.pipeline import ScreenerPipeline
 from screener.tracker import evaluate_tracker_performance
 
 
-def run_analyze(ticker_input: str, html_output: str | None = None) -> None:
-    """运行单股深度穿透分析。"""
+logger = logging.getLogger("ast_trader.cli")
+
+
+# ---------------------------------------------------------------- AI 判断层接线
+def _build_ai_enrichment(
+    ts_code: str,
+    stock_name: str,
+    gov_info: dict[str, Any],
+) -> dict[str, Any]:
+    """构建 `governance` / `theme_purity` 两模块的 AI 增强。**AI 关闭时返回 {}**。
+
+    ★ 上下文口径与 `judgment_chain` 共用 `ai_coprocessor.context` ——
+      否则 cli 与决断链会各自拉取不同批公告，同一只票两个 AI 结论互相打脸。
+    ★ 这两个模块都**只走提名单向阀**加风险，不改写任何既有量化判定。
+    """
+    if not config.AI_ENABLED:
+        return {}
+
+    from core.ai_coprocessor import enrich_many
+    from core.ai_coprocessor.context import build_context
+
+    ctx = build_context(
+        ts_code, stock_name,
+        concepts=gov_info.get("concepts") or [],
+        mainbz_list=gov_info.get("main_business") or [],
+    )
+    result = enrich_many(ctx, ("governance", "theme_purity"))
+    return {k: v for k, v in result.items() if v is not None}
+
+
+def _merge_theme_nominations(flags: list[Any], ai_map: dict[str, Any]) -> None:
+    """题材纯度提名并入红旗池（单向阀：只能加风险）。
+
+    `governance` 的提名已由 `AuditEngine.run_audit(ai=...)` 内部并入，
+    这里只补 `theme_purity` —— 避免同一批提名被并入两次。
+    """
+    if not ai_map or ai_map.get("theme_purity") is None:
+        return
+    try:
+        from core.ai_coprocessor.guard import nominations_to_flags
+
+        flags.extend(nominations_to_flags({"theme_purity": ai_map.get("theme_purity")}))
+    except Exception as exc:                                # noqa: BLE001
+        logger.warning("AI 题材纯度提名并入失败（已忽略）: %s", exc)
+
+
+def analyze_ticker(ticker_input: str, html_output: str | None = None) -> dict[str, Any] | None:
+    """执行单股全链路分析并返回决断卡；代码非法或行情不可得时返回 ``None``。
+
+    委托给 SingleStockAnalyzer 统一编排引擎，保证单股分析流水线与批量回测、测试完全同源。
+    """
     try:
         eltdx_code, ts_code = normalize_code(ticker_input)
     except ValueError as e:
         print(f"❌ 代码格式错误: {e}")
-        sys.exit(1)
+        return None
 
     print(f"\n🔍 正在获取 {ts_code} ({eltdx_code}) 的行情、财务与博弈数据...")
-    collector = EltdxCollector()
+    analyzer = SingleStockAnalyzer()
+    card = analyzer.analyze(ticker_input=ticker_input, html_output=html_output)
+    if card and card.get("saved_html_path"):
+        print(f"\n📊 离线 HTML 研报已成功生成: {card['saved_html_path']}")
+    elif card is None:
+        print(f"❌ 无法获取 {ts_code} 的行情数据或代码错误")
+    return card
 
-    # 1. 行情与动能
-    daily_df = collector.get_daily(ts_code, count=60)
-    quote = collector.get_realtime_quote(ts_code)
-    if daily_df.empty or not quote:
-        print(f"❌ 无法获取 {ts_code} 的行情数据")
+
+def run_analyze(
+    ticker_input: str,
+    html_output: str | None = None,
+    ai: bool = False,
+    ai_model: str | None = None,
+    verbose: bool = False,
+) -> None:
+    """运行单股深度穿透分析（CLI 入口）。"""
+    # --ai 显式开关优先于配置默认值（配置默认关闭以保证测试确定性与无网可用）
+    if ai:
+        config.AI_ENABLED = True
+    if ai_model:
+        config.AI_MODEL = ai_model
+
+    ok, status = config.ai_status()
+    print(("🧠 " if ok else "⚪ ") + status)
+    if ai and not ok:
+        print("   ⚠️  AI 不可用，将按既有规则判定继续 —— 结果仍然有效，只是少了语义增强")
+
+    card = analyze_ticker(ticker_input, html_output=html_output)
+    if card is None:
         sys.exit(1)
-
-    extractor = GameFeatureExtractor()
-    momentum = extractor.extract_momentum(daily_df)
-
-    num_code = ts_code.split(".")[0]
-    stock_name = quote.get("name") or f"标的_{num_code}"
-
-    # 2. 治理与财务扫雷 (二元排雷)
-    gov_info = collector.get_f10_governance_and_concept(ts_code)
-    f_data = collector.get_financial_reports(ts_code)
-
-    audit_engine = AuditEngine()
-    flags = audit_engine.run_audit(
-        balance_df=f_data["balance"],
-        cashflow_df=f_data["cashflow"],
-        income_df=f_data["income"],
-        governance_info=gov_info,
-        quote_info=quote,
-    )
-
-    # 3. 大盘连板天梯与市场情绪周期 (Layer 0 市场情绪总闸门)
-    ladder_analyzer = LadderAnalyzer(collector=collector)
-    sentiment_overview, stock_theme_map, _ = ladder_analyzer.analyze()
-    ladder_info = stock_theme_map.get(num_code)
-
-    # 4. 真实资金流与高频微观结构 (开源金工聪明钱 Q 因子、集合竞价与换手沉淀)
-    money_flow = collector.get_money_flow(ts_code)
-    micro_analyzer = MicrostructureAnalyzer()
-    microstructure = collector.get_microstructure(
-        ts_code,
-        current_price=quote.get("close", 0.0),
-        daily_df=daily_df,
-        momentum=momentum,
-        ladder_info=ladder_info,
-        float_share=quote.get("float_share", 0.0),
-        quote=quote,
-        analyzer=micro_analyzer,
-    )
-
-    # 5. 近 30 天龙虎榜席位匹配
-    lhb_records = fetch_lhb_seats(num_code, days=30, health=collector.health)
-    matcher = SeatMatcher()
-    matched_youzi = matcher.match_seats(lhb_records)
-
-    # 6. 杀猪盘雷达检测
-    detector = TrapDetector()
-    trap_score, trap_warnings = detector.evaluate(ts_code, gov_info.get("concepts", []))
-
-    # 7. 游资战法特征提取与真实匹配 (杜绝无题材默认造假)
-    theme_ctx = {
-        "concepts": gov_info.get("concepts", []),
-        "leader_rank": ladder_info.get("leader_rank", 1) if ladder_info else (1 if gov_info.get("concepts") else 999),
-        "breadth_pct": 75.0 if ladder_info and ladder_info.get("is_leader") else (50.0 if gov_info.get("concepts") else 0.0),
-        "has_theme": bool(gov_info.get("concepts")) or bool(ladder_info),
-    }
-    tape_features = extract_tape_features(
-        quote=quote,
-        momentum=momentum,
-        market_cap=quote.get("total_mv", 0.0),
-        theme_info=theme_ctx,
-        governance_risk=any(f.level == "🔴" for f in flags),
-        hard_event=len(gov_info.get("concepts", [])) > 0,
-    )
-    matched_personas = evaluate_youzi_personas(tape_features)
-
-    # 8. 全层因果作战决策链装配
-    runner = JudgmentChainRunner()
-    card = runner.run(
-        ticker=ts_code,
-        name=stock_name,
-        trade_date=datetime.now().strftime("%Y%m%d"),
-        quote=quote,
-        momentum=momentum,
-        flags=flags,
-        matched_youzi=matched_youzi,
-        trap_warnings=trap_warnings,
-        matched_personas=matched_personas,
-        concepts=gov_info.get("concepts", []),
-        ladder_info=ladder_info,
-        sentiment_overview=sentiment_overview,
-        money_flow=money_flow,
-        lhb_records=lhb_records,
-        governance_info=gov_info,
-        microstructure=microstructure,
-        daily_df=daily_df,
-        financial_reports=f_data,
-        data_health=collector.health.summary(),
-    )
-
-    # 9. 渲染终端决断卡
-    print_decision_card(card)
-
-    # 10. 若指定 --html，则生成离线研报
-    if html_output is not None:
-        saved_path = render_decision_card_html(card, output_path=html_output if html_output != "default" else None)
-        print(f"\n📊 离线 HTML 研报已成功生成: {saved_path}")
+    print_decision_card(card, verbose=verbose)
 
 
 def run_screen(mode: str, top_n: int) -> None:
@@ -176,7 +154,8 @@ def run_track() -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="AST-Trader: A股短线量化投研系统 (买方审计 + 游资博弈)",
-        epilog="示例: python cli.py analyze 002273 或 python cli.py screen --mode close 或 python cli.py track",
+        epilog="示例: python cli.py analyze 002273  |  python cli.py analyze 002273 --ai  |  "
+               "python cli.py screen --mode close  |  python cli.py track",
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
@@ -190,6 +169,23 @@ def main() -> None:
         default=None,
         help="生成独立离线 HTML 研报 (可指定路径，默认保存在 ./reports/ 目录)",
     )
+    analyze_parser.add_argument(
+        "--ai",
+        action="store_true",
+        help="启用 AI 语义判断层（护城河/催化临界点/治理穿透/题材纯度/情景战术）。"
+             "默认关闭；需先在 .env 配置 AST_AI_API_KEY。单股耗时约 60~120s",
+    )
+    analyze_parser.add_argument(
+        "-v",
+        "--verbose",
+        action="store_true",
+        help="展开详细调试信息（含全量底层数据接口审计日志与AI中间推导）",
+    )
+    analyze_parser.add_argument(
+        "--ai-model",
+        default=None,
+        help=f"覆盖 AI 模型（当前默认: {config.AI_MODEL}）",
+    )
 
     # screen
     screen_parser = subparsers.add_parser("screen", help="全市场短线三层漏斗筛选")
@@ -202,7 +198,7 @@ def main() -> None:
     args = parser.parse_args()
 
     if args.command == "analyze":
-        run_analyze(args.ticker, html_output=args.html)
+        run_analyze(args.ticker, html_output=args.html, ai=args.ai, ai_model=args.ai_model, verbose=args.verbose)
     elif args.command == "screen":
         run_screen(mode=args.mode, top_n=args.top)
     elif args.command == "track":

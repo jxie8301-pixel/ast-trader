@@ -147,9 +147,23 @@ def detect_trap_signals(
 class TrapDetector:
     """杀猪盘与场外诱多检测器。"""
 
-    def evaluate(self, ticker: str, concepts: list[str] | None = None) -> tuple[int, list[str]]:
-        """评估杀猪盘风险，返回 (trap_score, warnings)。"""
+    def evaluate(self, ticker: str, concepts: list[str] | None = None, **_: Any) -> tuple[int, list[str]]:
+        """评估杀猪盘风险，返回 (trap_score, warnings)。
+
+        ★ 20261029 审计 P2：`detect_trap_signals` 的设计输入是**舆情正文**
+          （新闻 / 股吧 / 推介话术），而这里喂给它的是**概念题材标签**
+          （如 "华为概念 锂电池"）。概念名里恰好含"暴涨""龙头"等词就会命中
+          关键词规则 → 把"标签里有'龙头'二字"当成"黑嘴荐股"在评分。
+          保留能力（宁可多一个弱信号），但**必须如实标注口径**，并说明
+          这不是真实舆情核验 —— 严禁让读者以为系统真的读过舆情。
+        """
         concept_str = " ".join(concepts or [])
         res = detect_trap_signals(news_text=concept_str)
         warnings = [f"{h['name']}: {h['evidence']}" for h in res["hit_signals"]]
+        if concept_str:
+            warnings.append(
+                "⚠️ 口径说明：本项输入为**概念题材标签**而非真实舆情正文，"
+                "命中仅表示标签用词与杀猪盘话术词典重合，不等于已完成舆情核验"
+                "（当前未接入新闻/股吧文本源）。"
+            )
         return res["trap_score"], warnings

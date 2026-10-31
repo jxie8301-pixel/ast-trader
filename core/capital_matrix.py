@@ -82,7 +82,8 @@ class CapitalMatrixRadar:
             inst_score = 80.0
             inst_summary = f"基本面健康 (PE(TTM) {pe:.1f}x / PB {pb:.1f}x)，估值具备安全边际"
             if inst_net_wan > 1000:
-                inst_summary += f"，近30日龙虎榜获机构净买入 +{inst_net_wan/100:.1f} 亿元"
+                # ★ 20261029 审计 P1-11：万元 → 亿元是 /10000，旧代码 /100 差 100 倍
+                inst_summary += f"，近30日龙虎榜获机构净买入 +{inst_net_wan/10000:.1f} 亿元"
                 inst_score = min(inst_score + 10.0, 95.0)
         elif pe > 60 or pb > 8.0:
             inst_status = "BEAR"
@@ -114,7 +115,11 @@ class CapitalMatrixRadar:
         elif main_net_wan < -3000:
             hm_status = "BEAR"
             hm_score = 30.0
-            hm_summary = f"主力资金显著净流出 (主力净额 {main_net_wan/100:.1f} 亿元，超大单 {super_net_wan/100:.1f} 亿元)，大单逢高派发，短线缺乏承接"
+            # ★ P1-11：万元 → 亿元 /10000（旧代码 /100，金额被放大 100 倍）
+            hm_summary = (
+                f"主力资金显著净流出 (主力净额 {main_net_wan/10000:.1f} 亿元，"
+                f"超大单 {super_net_wan/10000:.1f} 亿元)，大单逢高派发，短线缺乏承接"
+            )
         elif is_leader or board_level >= 2:
             hm_status = "BULL"
             hm_score = 92.0
@@ -122,7 +127,7 @@ class CapitalMatrixRadar:
         elif main_net_wan > 3000:
             hm_status = "BULL"
             hm_score = 85.0
-            hm_summary = f"主力资金强势做多 (主力净额 +{main_net_wan/100:.1f} 亿元)，盘口大单攻击意愿明确"
+            hm_summary = f"主力资金强势做多 (主力净额 +{main_net_wan/10000:.1f} 亿元)，盘口大单攻击意愿明确"
         elif matched_personas and bool(concepts):
             top_p = matched_personas[:2]
             p_str = "、".join(top_p)
@@ -132,7 +137,7 @@ class CapitalMatrixRadar:
         else:
             hm_status = "NEUTRAL"
             hm_score = 45.0
-            hm_summary = f"主力资金表现平淡 (主力净额 {main_net_wan/100:+.1f} 亿元)，未见强势游资合力主导"
+            hm_summary = f"主力资金表现平淡 (主力净额 {main_net_wan/10000:+.1f} 亿元)，未见强势游资合力主导"
 
         dimensions.append(CapitalDimension(
             dimension_id="hot_money",
@@ -240,7 +245,7 @@ class CapitalMatrixRadar:
             dominant = "短线游资分歧进攻"
         else:
             synergy_score = weighted_score
-            verdict = "❄️ 资金观望整理态势 (缺乏主导合力，动能尚未聚集，维持中性底仓)"
+            verdict = "❄️ 资金观望整理态势 (缺乏主导合力，动能尚未聚集，以防守观望为主)"
             dominant = "存量资金博弈"
 
         # 提炼多方进攻与空方防守核心论据

@@ -70,6 +70,111 @@ def _latest_quarter(df: pd.DataFrame, end_date_col: str = "end_date") -> pd.Data
     return df.sort_values("_sort", ascending=False).iloc[:1]
 
 
+# ---------------------------------------------------------------- 报告期感知
+#: A 股定期报告期 → (季度序号, 期次简称, 累计口径说明)。
+#: ★ A 股三张表**全部是年初至今累计口径**：Q1=第1季度、H1=上半年累计、
+#:   Q3=前三季度累计、年报=全年。把「Q3 累计 15.27 亿」当「年化净利」用会
+#:   系统性低估盈利 25%；把「Q3 累计」与「上年报」直接比同比更是错配。
+_PERIOD_KINDS: dict[str, tuple[int, str, str]] = {
+    "0331": (1, "一季报", "第1季度累计"),
+    "0630": (2, "半年报", "上半年累计"),
+    "0930": (3, "三季报", "前三季度累计"),
+    "1231": (4, "年报", "全年"),
+}
+
+#: 单季折算时，本期累计需要减去的**上一个累计期**
+_PREV_CUMULATIVE: dict[str, str] = {"0630": "0331", "0930": "0630", "1231": "0930"}
+
+
+def _row_of(df: pd.DataFrame, period: str) -> dict | None:
+    """取某一报告期的那一行（重复期取最后一行）；没有返回 None。"""
+    if df is None or df.empty or "end_date" not in df.columns:
+        return None
+    hit = df[df["end_date"].astype(str) == str(period)]
+    if hit.empty:
+        return None
+    return hit.iloc[-1].to_dict()
+
+
+def _val_of(df: pd.DataFrame, period: str, field: str) -> float | None:
+    row = _row_of(df, period)
+    return None if row is None else _safe_float(row.get(field))
+
+
+def period_basis_of(*dfs: pd.DataFrame) -> dict[str, Any]:
+    """从三张表推断「数据截至哪一期」，并标明是否为累计口径。
+
+    ★ 这是"数据新鲜度黑洞"的唯一权威出口：渲染层必须把它显示出来，
+      否则读者无法知道报告里的毛利率到底是 2025 年报还是 2026 三季报。
+    """
+    for df in dfs:
+        if df is None or df.empty or "end_date" not in df.columns:
+            continue
+        latest = str(df["end_date"].astype(str).max())
+        md = latest[4:]
+        seq, short, cumulative = _PERIOD_KINDS.get(md, (0, f"{latest}期", "累计"))
+        year = latest[:4]
+        return {
+            "period": latest,
+            "year": year,
+            "quarter_seq": seq,
+            "short_label": short,
+            "label": f"{year} {short}",
+            "cumulative_desc": cumulative,
+            "is_annual": md == "1231",
+            "is_cumulative": seq not in (0, 4),
+        }
+    return {}
+
+
+def _ttm(df: pd.DataFrame, field: str, latest_p: str) -> float | None:
+    """滚动 12 个月值 = 本期累计 + 上年报 − 上年同期累计。
+
+    最新期本身是年报时，TTM 就等于年报值。任一项缺失返回 None
+    （绝不退化成"用累计值冒充年度值"）。
+    """
+    latest_p = str(latest_p)
+    cur = _val_of(df, latest_p, field)
+    if cur is None:
+        return None
+    md = latest_p[4:]
+    if md == "1231":
+        return cur
+    year = int(latest_p[:4])
+    prev_annual = _val_of(df, f"{year - 1}1231", field)
+    prev_same = _val_of(df, f"{year - 1}{md}", field)
+    if prev_annual is None or prev_same is None:
+        return None
+    return cur + prev_annual - prev_same
+
+
+def _same_period_yoy(df: pd.DataFrame, field: str, latest_p: str) -> float | None:
+    """同比同季：本期累计 vs 上年同期累计（A 股唯一可比的同比口径）。"""
+    latest_p = str(latest_p)
+    cur = _val_of(df, latest_p, field)
+    if cur is None:
+        return None
+    md = latest_p[4:]
+    base = _val_of(df, f"{int(latest_p[:4]) - 1}{md}", field)
+    return _pct_change(base, cur)
+
+
+def _single_period(df: pd.DataFrame, field: str, latest_p: str) -> float | None:
+    """单季（单期）发生额 = 本期累计 − 上一个累计期。Q1 的累计即单季。"""
+    latest_p = str(latest_p)
+    cur = _val_of(df, latest_p, field)
+    if cur is None:
+        return None
+    md = latest_p[4:]
+    if md == "0331":
+        return cur
+    prev_md = _PREV_CUMULATIVE.get(md)
+    if not prev_md:
+        return None
+    prev = _val_of(df, f"{latest_p[:4]}{prev_md}", field)
+    return None if prev is None else cur - prev
+
+
 class DerivedMetricsCalculator:
     """衍生财务指标与「赚不赚钱」数据看板计算引擎。"""
 
@@ -87,7 +192,14 @@ class DerivedMetricsCalculator:
         cf = _latest_annual(cashflow_df)
         quote = quote or {}
 
+        # 0. 报告期基准：全报告「数据截至哪一期」的唯一出处。
+        #    ★ 年报序列(inc/bs/cf)只用来做长周期趋势；"最新值"一律走下面第
+        #      1b/2b/3b 段的报告期感知口径，否则三季报披露后报告仍在念上一个年报。
+        basis = period_basis_of(income_df, cashflow_df, balance_df)
+        latest_p = str(basis.get("period", ""))
+
         out: dict[str, Any] = {
+            "period_basis": basis,
             "growth": {},
             "profitability": {},
             "valuation": {},
@@ -96,7 +208,7 @@ class DerivedMetricsCalculator:
             "segments": mainbz or [],
         }
 
-        # 1. 成长性 (CAGR & YoY)
+        # 1. 成长性 (CAGR 走年报序列)
         growth: dict[str, Any] = {}
         if not inc.empty:
             years_span = len(inc)
@@ -113,6 +225,22 @@ class DerivedMetricsCalculator:
                 growth["net_income_yoy_latest"] = _pct_change(
                     inc.iloc[-2].get("n_income_attr_p"), inc.iloc[-1].get("n_income_attr_p")
                 )
+                growth["revenue_yoy_latest_annual"] = growth["revenue_yoy_latest"]
+                growth["net_income_yoy_latest_annual"] = growth["net_income_yoy_latest"]
+
+        # 1b. 同比同季（A 股累计口径下唯一可比的同比）
+        #     拿 2026Q3 累计去比 2025 年报是自欺，唯一可比是 2026Q3 vs 2025Q3。
+        if latest_p:
+            yoy_rev = _same_period_yoy(income_df, "revenue", latest_p)
+            yoy_ni = _same_period_yoy(income_df, "n_income_attr_p", latest_p)
+            if yoy_rev is not None:
+                growth["revenue_yoy_latest"] = yoy_rev
+            if yoy_ni is not None:
+                growth["net_income_yoy_latest"] = yoy_ni
+            growth["yoy_basis"] = (
+                f"{basis.get('label', latest_p)} {basis.get('cumulative_desc', '')}"
+                f" vs 上年同期"
+            )
         out["growth"] = growth
 
         # 2. 盈利质量与 ROE 多期趋势
@@ -178,6 +306,61 @@ class DerivedMetricsCalculator:
             if cur_assets and cur_liab and cur_liab > 0:
                 prof["current_ratio"] = round(cur_assets / cur_liab, 2)
 
+        # 2b. TTM 滚动 12 个月口径 —— 覆盖"最新值"
+        #     年报序列保留做趋势，但最新值必须是滚动口径：否则 2026 三季报已披露，
+        #     报告里的毛利率/ROE/现金含量还停在 2025 年报（实测差 2.9pct 毛利率）。
+        if latest_p and not basis.get("is_annual"):
+            ttm_rev = _ttm(income_df, "revenue", latest_p)
+            ttm_cost = _ttm(income_df, "oper_cost", latest_p)
+            ttm_ni = _ttm(income_df, "n_income_attr_p", latest_p)
+            ttm_ocf = _ttm(cashflow_df, "n_cashflow_act", latest_p)
+
+            if ttm_rev and ttm_rev > 0:
+                if ttm_cost is not None:
+                    prof["gross_margin_latest"] = round((ttm_rev - ttm_cost) / ttm_rev * 100.0, 2)
+                    gross_margin_trend.append({"label": "TTM", "value": prof["gross_margin_latest"]})
+                    prof["gross_margin_series"] = gross_margin_trend
+                if ttm_ni is not None:
+                    prof["net_margin_latest"] = round(ttm_ni / ttm_rev * 100.0, 2)
+                    net_margin_trend.append({"label": "TTM", "value": prof["net_margin_latest"]})
+                    prof["net_margin_series"] = net_margin_trend
+
+            # 单季（本季）毛利率 —— 判断"止跌回升 / 继续恶化"的唯一正确口径
+            sq_rev = _single_period(income_df, "revenue", latest_p)
+            sq_cost = _single_period(income_df, "oper_cost", latest_p)
+            if sq_rev and sq_rev > 0 and sq_cost is not None:
+                prof["gross_margin_single_quarter"] = round((sq_rev - sq_cost) / sq_rev * 100.0, 2)
+            prev_p = f"{latest_p[:4]}{_PREV_CUMULATIVE.get(latest_p[4:], '')}"
+            if prev_p and len(prev_p) == 8:
+                psq_rev = _single_period(income_df, "revenue", prev_p)
+                psq_cost = _single_period(income_df, "oper_cost", prev_p)
+                if psq_rev and psq_rev > 0 and psq_cost is not None:
+                    prof["gross_margin_prev_quarter"] = round((psq_rev - psq_cost) / psq_rev * 100.0, 2)
+
+            # ROE(TTM) = TTM 归母净利 ÷ 最新期净资产（期末口径，非年报期末）
+            bs_row = _row_of(balance_df, latest_p) or {}
+            equity_latest = _safe_float(
+                bs_row.get("total_hldr_eqy_inc_min_int") or bs_row.get("total_assets")
+            )
+            if ttm_ni is not None and equity_latest and equity_latest > 0:
+                prof["roe_latest"] = round(ttm_ni / equity_latest * 100.0, 2)
+                roe_trend.append({"label": "TTM", "value": prof["roe_latest"]})
+                prof["roe_series"] = roe_trend
+                prof["roe_trend"] = {p["label"]: p["value"] for p in roe_trend}
+
+            if ttm_ocf is not None and ttm_ni:
+                prof["cash_content_latest"] = round(ttm_ocf / ttm_ni, 2)
+                cash_content_trend.append({"label": "TTM", "value": prof["cash_content_latest"]})
+                prof["cash_content_series"] = cash_content_trend
+
+            # 资产负债率同样要跟上最新期（年报口径会滞后一整年）
+            tot_assets = _safe_float(bs_row.get("total_assets"))
+            tot_liab = _safe_float(bs_row.get("total_liab"))
+            if tot_assets and tot_assets > 0 and tot_liab is not None:
+                prof["debt_to_assets"] = round(tot_liab / tot_assets * 100.0, 2)
+
+            prof["basis_label"] = f"TTM(截至{basis.get('label', latest_p)})"
+
         out["profitability"] = prof
 
         # 3. 自由现金流与所有者盈余
@@ -207,6 +390,27 @@ class DerivedMetricsCalculator:
                 maint_capex = capex * 0.8
                 cashflow["owner_earnings_latest"] = ni_cf + da - maint_capex
 
+        # 3b. OCF / capex / FCF 同样走 TTM。
+        #     ★ 这是"经营现金流转负"类退出线能否被诚实核销的关键：H1 单期 OCF
+        #       为正不代表全年造血为正（实测科达利 2026H1 OCF +8.38 亿，但同期
+        #       capex 9.57 亿 → FCF 已为负）。
+        if latest_p and not basis.get("is_annual"):
+            ttm_ocf = _ttm(cashflow_df, "n_cashflow_act", latest_p)
+            ttm_capex = _ttm(cashflow_df, "c_pay_acq_const_fiolta", latest_p)
+            if ttm_ocf is not None:
+                cashflow["operating_cashflow_latest"] = ttm_ocf
+            if ttm_capex is not None:
+                cashflow["capex_latest"] = ttm_capex
+            if ttm_ocf is not None and ttm_capex is not None:
+                ttm_fcf = ttm_ocf - ttm_capex
+                cashflow["free_cashflow_latest"] = ttm_fcf
+                cashflow["free_cashflow_basis"] = (
+                    f"TTM OCF − TTM 购建固定资产支付现金 (截至{basis.get('label', latest_p)})"
+                )
+                tot_mv = quote.get("total_mv", 0.0)
+                if tot_mv > 0:
+                    cashflow["fcf_yield"] = round(ttm_fcf / tot_mv * 100.0, 2)
+
         out["cashflow"] = cashflow
 
         # 4. 最新期间生命体征 (排查投资收益藏在营业利润里)
@@ -220,6 +424,17 @@ class DerivedMetricsCalculator:
             vitals["latest_operating_profit"] = _safe_float(row.get("operate_profit"))
             vitals["latest_invest_income"] = _safe_float(row.get("invest_income"))
             vitals["latest_fv_chg_gain"] = _safe_float(row.get("fv_value_chg_gain"))
+
+            # ★ 口径标注：`latest_net_income` 是**年初至今累计值**（如 2026Q3 累计
+            #   15.27 亿），绝不是年度值/年化值；估值底座必须用 `latest_net_income_ttm`。
+            vitals["period_basis"] = basis
+            vitals["latest_period_label"] = basis.get("label", vitals.get("latest_period", ""))
+            vitals["latest_net_income_is_cumulative"] = bool(basis.get("is_cumulative"))
+            vitals["latest_net_income_ttm"] = (
+                _ttm(income_df, "n_income_attr_p", latest_p)
+                if latest_p and not basis.get("is_annual")
+                else (_val_of(income_df, latest_p, "n_income_attr_p") if latest_p else None)
+            )
 
             op = vitals["latest_operating_profit"]
             inv = vitals["latest_invest_income"] or 0.0

@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import config
 from core.capital_matrix import CapitalMatrixRadar
 from core.execution_playbook import PlaybookBuilder
 from core.investor_panel import InvestorPanelJury
@@ -102,24 +103,69 @@ def test_investor_panel_jury_strong_buy():
     assert "强烈多头共识" in result.panel_verdict
 
 
+def _build_buy_playbook(position_cap: float | None, **overrides) -> object:
+    """按统一参数构造 BUY 剧本，避免各用例重复字面量。"""
+    kwargs = {
+        "quote": {"close": 20.0, "pre_close": 19.0},
+        "momentum": {"support_level": 19.0, "resistance_level": 22.0},
+        "matched_personas": ["赵老哥"],
+        "action": "BUY",
+        "ladder_info": {"is_leader": True, "board_level": 3},
+        "fatal_flag": False,
+        "position_cap": position_cap,
+    }
+    kwargs.update(overrides)
+    return PlaybookBuilder().build(**kwargs)
+
+
 def test_execution_playbook_buy_tactics():
-    """验证主升做多 BUY 状态生成符合实战纪律的战术卡与仓位配比。"""
-    builder = PlaybookBuilder()
-    pb = builder.build(
-        quote={"close": 20.0, "pre_close": 19.0},
-        momentum={"support_level": 19.0, "resistance_level": 22.0},
-        matched_personas=["赵老哥"],
-        action="BUY",
-        ladder_info={"is_leader": True, "board_level": 3},
-        fatal_flag=False,
-    )
+    """验证主升做多 BUY 状态生成符合实战纪律的战术卡与仓位配比。
+
+    极端档（主力满档 + 高置信度）仓位上限为 config.MAX_SINGLE_POSITION_EXTREME，
+    剧本配比按 PLAYBOOK_BASE_POSITION_RATIO 拆分为首仓 / 加仓 / 封顶三档。
+    """
+    pb = _build_buy_playbook(config.MAX_SINGLE_POSITION_EXTREME)
 
     assert pb.action == "BUY"
+    assert pb.max_position_pct == round(config.MAX_SINGLE_POSITION_EXTREME * 100)
+    assert pb.base_position_pct == round(
+        pb.max_position_pct * config.PLAYBOOK_BASE_POSITION_RATIO
+    )
+    assert pb.add_position_pct == pb.max_position_pct - pb.base_position_pct
     assert pb.base_position_pct == 15
     assert pb.add_position_pct == 10
-    assert pb.max_position_pct == 25
     assert "龙头加速打板" in pb.entry_tactic
     assert "死锁退出线" in pb.invalidation_rule
+
+
+def test_execution_playbook_cap_follows_normal_tier():
+    """常规档下剧本封顶仓位必须等于 config.MAX_SINGLE_POSITION（不得沿用硬编码 25%）。"""
+    pb = _build_buy_playbook(config.MAX_SINGLE_POSITION)
+
+    assert pb.max_position_pct == round(config.MAX_SINGLE_POSITION * 100) == 20
+    assert pb.base_position_pct == 12
+    assert pb.add_position_pct == 8
+
+
+def test_execution_playbook_cap_never_exceeds_extreme_tier():
+    """即使决断卡误传超额仓位，剧本也必须被极端档上限封顶。"""
+    pb = _build_buy_playbook(0.95)
+
+    assert pb.max_position_pct == round(config.MAX_SINGLE_POSITION_EXTREME * 100) == 25
+
+
+def test_execution_playbook_non_leader_applies_discount():
+    """非龙头标的在同等上限下按 PLAYBOOK_NON_LEADER_CAP_RATIO 折价。"""
+    leader = _build_buy_playbook(config.MAX_SINGLE_POSITION_EXTREME)
+    follower = _build_buy_playbook(
+        config.MAX_SINGLE_POSITION_EXTREME,
+        ladder_info={"is_leader": False, "board_level": 1},
+    )
+
+    assert follower.max_position_pct < leader.max_position_pct
+    assert follower.max_position_pct == round(
+        leader.max_position_pct * config.PLAYBOOK_NON_LEADER_CAP_RATIO
+    )
 
 
 def test_execution_playbook_avoid_on_fatal():

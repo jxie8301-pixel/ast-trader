@@ -156,7 +156,14 @@ def test_enhanced_pillar3_odds_p_f_n_and_reverse_dcf():
     p3 = card.get("pillar_3_odds", "")
     assert "P=F+N 叙事拆解" in p3
     assert "反向 DCF" in p3
-    assert "合理价区间 [SOTP, DCF]" in p3
+    # ★ 契约变更（P1 确定性分层，见 docs/SPEC_CONCLUSION_CERTAINTY_LAYERING.md）：
+    #   「合理价区间」隐含"市场价错误"的宣称，改为**条件锚点** ——
+    #   它是"若相信以下假设，则值这个区间"，而非唯一真理。
+    assert "条件锚点 [SOTP, DCF]" in p3
+    assert "合理价" not in p3
+    # 支撑该区间的假设与排除项必须一并可见（否则等于没改）
+    assert "估值假设前提" in p3
+    assert "本估值不含" in p3
     assert "SOTP=" in p3
     assert "DCF=" in p3
 
@@ -195,3 +202,84 @@ def test_enhanced_pillar4_path_and_pillar5_decision():
     assert "持股者" in tactic
     assert "9:25" in tactic or "竞价" in tactic
     assert "生命线" in inv or "防线" in inv or "止损" in inv
+
+
+# ---------------------------------------------------------------- 物种分流三轨
+def test_classify_stock_track_small_cap_illiquid_is_unverified_not_institutional():
+    """P1-2: 缩量小市值票严禁被兜底成「产业中军」。
+
+    旧实现对非连板、未达市值门槛、换手不足 6% 的标的无条件返回 B 轨，
+    导致 58.7 亿市值的永安行（及十几亿市值的微盘股）被冠以「机构趋势与产业中军」。
+    """
+    runner = JudgmentChainRunner()
+
+    # 永安行量级：流通/总市值均 58.7 亿，换手 3%，无概念标签，非连板
+    code, name = runner.classify_stock_track(
+        quote={"circ_mv": 58.7e8, "total_mv": 58.7e8, "turnover_ratio": 3.0},
+        ladder_info=None,
+        concepts=[],
+    )
+
+    assert code == "TRACK_UNVERIFIED"
+    assert name == "未核验(物种未定)"
+    assert code != "TRACK_B_INSTITUTIONAL"
+
+
+def test_classify_stock_track_mid_cap_illiquid_is_unverified():
+    """P1-2: 150~200 亿流通市值的中盘股，缩量且无概念时同样不得判为中军。"""
+    runner = JudgmentChainRunner()
+
+    code, _ = runner.classify_stock_track(
+        quote={"circ_mv": 170e8, "total_mv": 180e8, "turnover_ratio": 2.5},
+        ladder_info={"board_level": 1, "is_leader": False},
+        concepts=[],
+    )
+
+    assert code == "TRACK_UNVERIFIED"
+
+
+def test_classify_stock_track_keeps_a_and_b_tracks():
+    """P1-2: 三轨改造不得改变 A / B 两轨的既有命中规则。"""
+    runner = JudgmentChainRunner()
+
+    # A 轨 1：连板梯队 >= 2 板
+    assert runner.classify_stock_track(
+        quote={"circ_mv": 60e8, "total_mv": 60e8, "turnover_ratio": 12.0},
+        ladder_info={"board_level": 3, "is_leader": True},
+        concepts=[],
+    )[0] == "TRACK_A_THEME"
+
+    # A 轨 2：小市值 + 高换手
+    assert runner.classify_stock_track(
+        quote={"circ_mv": 40e8, "total_mv": 40e8, "turnover_ratio": 9.0},
+        ladder_info=None,
+        concepts=[],
+    )[0] == "TRACK_A_THEME"
+
+    # B 轨：流通市值达标
+    assert runner.classify_stock_track(
+        quote={"circ_mv": 250e8, "total_mv": 260e8, "turnover_ratio": 1.0},
+        ladder_info=None,
+        concepts=[],
+    )[0] == "TRACK_B_INSTITUTIONAL"
+
+    # B 轨：总市值达标（流通不足 200 亿但总市值 >= 300 亿）
+    assert runner.classify_stock_track(
+        quote={"circ_mv": 180e8, "total_mv": 320e8, "turnover_ratio": 1.0},
+        ladder_info=None,
+        concepts=[],
+    )[0] == "TRACK_B_INSTITUTIONAL"
+
+
+def test_unverified_track_does_not_enjoy_institutional_ice_exemption():
+    """P1-2: 弱市情绪冰点时，未核验轨必须与题材票同走防守分支，不得享受中军豁免。"""
+    from core.judgment_chain import (
+        TRACK_A_THEME,
+        TRACK_B_INSTITUTIONAL,
+        TRACK_DEFENSIVE_ON_ICE,
+        TRACK_UNVERIFIED,
+    )
+
+    assert TRACK_A_THEME in TRACK_DEFENSIVE_ON_ICE
+    assert TRACK_UNVERIFIED in TRACK_DEFENSIVE_ON_ICE
+    assert TRACK_B_INSTITUTIONAL not in TRACK_DEFENSIVE_ON_ICE

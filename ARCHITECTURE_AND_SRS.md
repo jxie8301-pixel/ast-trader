@@ -29,7 +29,7 @@
 | **FR-02** | 11 会计审计排雷引擎 | 严格实现 11 经典审计模型：Beneish M-Score（财务操纵 $M>-1.78$ 拦截）、Piotroski F-Score（健康度评分 0-9）、Altman Z-Score（破产预警）、Sloan（高应计异象）、Buffett（现金流背离）、主营业务侵蚀、大股东高比例质押（$>70\%$ 拦截）、股东户数变动、业绩预告变脸、长期股权投资敞口、历史高估值透支。 | P0 | `core/audit_engine.py` |
 | **FR-03** | 短线博弈与题材画像 | 建立一线游资席位库（`seat_db`）与资金容量射程匹配；近 30 天龙虎榜真实席位反查与属性标注（善庄/量化/游资）；概念纯度计算；8 维短线杀猪盘舆情特征匹配。 | P0 | `core/seat_matcher.py`<br>`core/trap_detector.py` |
 | **FR-04** | 五节点闭环判断链 | 按因果链条依次生成：①质地（真实成色与造假概率） -> ②状态（催化剂实锤与临界点） -> ③赔率（业绩底与情绪溢价） -> ④路径（左尾量化到具体价格与席位属性） -> ⑤决策（档位/仓位上限/唯一退出线）。 | P0 | `core/judgment_chain.py` |
-| **FR-05** | 质量门控与机检（Lint） | 12 条机器硬规则：命中 🔴 致命红旗强制封顶为“回避”且阻断推荐；仓位建议仅允许在第 ⑤ 节点出现；数值换算执行算术闭合机检（半 ULP 动态容差）。 | P0 | `lint/validator.py` |
+| **FR-05** | 质量门控与机检（Lint） | **16 条**机器硬规则（R1~R5、R7~R16、R18；R6/R17 按形态取舍刻意不移植）：命中 🔴 致命红旗强制封顶为“回避”且阻断推荐；仓位建议仅允许在第 ⑤ 节点出现；数值换算执行算术闭合机检（半 ULP 动态容差）。硬编码 fail 级 7 条（R7~R13），其余默认 warn，由 `config.LINT_RULE_SEVERITY` 控制。 | P0 | `lint/validator.py` |
 | **FR-06** | 全市场三层漏斗筛选 | Tier 1 流动性初筛（成交额 $\ge 5$ 亿、涨幅 $4.5\% \sim 10\%$、换手率 $8\% \sim 25\%$）；Tier 2 审计扫雷一票否决；Tier 3 题材板块共振与大单合力打分排序，输出 Top 5~10。 | P0 | `screener/` |
 | **FR-07** | 双模表现层输出 | CLI 终端 Rich 彩色卡片输出；自包含单文件响应式 HTML 报告导出（支持暗色模式、ECharts 与红标反查）。 | P1 | `presentation/` |
 
@@ -68,17 +68,38 @@ ast-trader/
 ├── cli.py                    # 统一终端入口: analyze (个股) / screen (选股)
 │
 ├── data/                     # 统一数据底层 (收敛至 eltdx)
-│   ├── eltdx_client.py       # TCP 协议底层通信与连接池管理
+│   ├── tdx_hosts.py          # 7709 主站四级优先级解析 (参数 > AST_TDX_HOSTS > json > 内置池)
+│   ├── eltdx_client.py       # TCP 协议底层通信与连接池就绪门、代码归一化
 │   ├── eltdx_collector.py    # 行情、K线、分笔分时、分批财务快照标准化
-│   └── supplement_api.py     # 龙虎榜席位与外部舆情轻量接口
+│   ├── eltdx_financial*.py   # 财务科目映射与单位换算
+│   ├── supplement_api.py     # 龙虎榜席位与外部舆情轻量接口
+│   ├── pdf_reader.py         # 定期报告/临时公告 PDF 抓取与页码级引文
+│   ├── announcement_corpus.py# 公告语料库
+│   ├── data_health.py        # 通道健康度审计
+│   └── degraded.py           # 缺失值缺省标记统一声明
 │
 ├── core/                     # 核心分析与计算中台
-│   ├── audit_engine.py       # 11 会计审计扫雷算法 (Beneish, Piotroski, Altman等)
+│   ├── audit_engine.py       # 12 个会计审计扫雷模型 (Beneish, Piotroski, Altman, DuPont 等)
 │   ├── red_flags.py          # 红旗聚合、归家、Top3 提炼与红标映射
+│   ├── types.py              # 核心类型定义
+│   ├── industry.py           # 行业准入识别器 (当前仅区分「金融 / 未分类」，见 F-2)
+│   ├── derivation.py         # 估值双锚 [SOTP, DCF] 与反向 DCF
+│   ├── derived_metrics.py    # 「赚不赚钱」看板
+│   ├── main_force_engine.py  # 主力 7 阶段状态机 (含 STAGE_UNVERIFIED 与磁盘迟滞)
+│   ├── microstructure.py     # L2 高频微观结构与 Q 因子
+│   ├── macro_regime.py       # 大盘情绪闸门
 │   ├── seat_matcher.py       # 游资席位数据库 (seat_db) 与资金容量射程匹配
+│   ├── youzi_personas.py     # 24 大一线游资战法画像
 │   ├── trap_detector.py      # 杀猪盘 8 维舆情特征探测器
 │   ├── game_features.py      # 短线博弈量价计算器 (量比、换手率、题材共振)
-│   └── judgment_chain.py     # 五节点判断链逻辑串联引擎
+│   ├── capital_matrix.py     # 资金矩阵雷达
+│   ├── investor_panel.py     # 投资者结构面板
+│   ├── execution_playbook.py # T+1 作战剧本 (持币/持股双轨战术)
+│   ├── judgment_chain.py     # 五节点判断链 (6 个独立装配方法)
+│   ├── ai_enrichment.py      # AI 增强结果的数据契约
+│   ├── ai_coprocessor/       # AI 语义协处理器 (单向阀；默认关闭，见 §4)
+│   ├── schemas/              # JSON-Schema 契约 (decision_card / ai_enrichment / common)
+│   └── schema_validator.py   # Draft202012Validator 跨文件校验
 │
 ├── screener/                 # 全市场漏斗筛选模块
 │   ├── pipeline.py           # 三层漏斗执行控制器
@@ -91,8 +112,19 @@ ast-trader/
 │
 └── presentation/             # 输出呈现层
     ├── terminal_view.py      # 终端富文本表格美化 (Rich 库驱动)
+    ├── plain_language.py     # 纯展示层白话翻译 (只读，绝不回写决断卡)
     └── html_renderer.py      # 自包含单文件响应式 HTML 研报渲染器
 ```
+
+> **尚未实施的能力线（架构图留白，勿误认为已落地）** —— 详见 `docs/UNIMPLEMENTED_WORKLIST.md`：
+> * **行业/板块相对强弱**：`core/sector_rs.py`（A-2）与 `data/eltdx_collector.get_sector_bars()`（B-1）均未实施，`core/industry.py` 目前**仅是金融业准入识别器**，不含全行业分位建模；
+> * **龙虎榜协同**：`core/lhb_synergy.py`（A-3）未实施，现存 `seat_matcher.py` 仅有静态中文映射，无席位属性标签；
+> * **实盘回测**：`screener/backtester.py`（A-4）与 `python cli.py backtest`（B-5）未实施，现有 `screener/tracker.py` 仅 T+1 单日复盘；
+> * **板块 RS 加权**：Tier 3 板块加权（B-2）与 `_decide_gear` 仓位乘数（B-3）依赖 A-2，一并待排期。
+>
+> **数据源限制（排雷规则已就绪但通道不可得，严禁视为已生效）**：
+> * 控股股东质押率 —— eltdx F10 **无股权质押通道**（已全量探测 governance / stock_info / valuation / company_info 均无该字段），`pledge_ratio` 恒为 `None`，`PLEDGE_FATAL_RATIO` 判据在真实跑批中恒定不触发，走「未核验降权」通道；
+> * 公司业绩预告 —— eltdx F10 无业绩预告通道，`gov["forecast"]` 无生产者，`FORECAST_DROP_FATAL_RATIO` 判据同样空转。
 
 ---
 
@@ -116,8 +148,9 @@ ast-trader/
 
 ## 8. 测试与验收标准
 
-1. **算法单元测试**: Beneish、Piotroski、Altman 等 11 个审计函数针对已知财务造假样本（如康美药业历史财报）100% 触发 🔴 致命红旗。
-2. **门控机检测试**: 针对构造的“命中致命红旗但决策判定为买入”的反向测试用例，`validator.py` 必须 100% 拦截并抛出异常。
+1. **算法单元测试**: Beneish、Piotroski、Altman 等 **12 个**审计模型针对已知财务造假样本（如康美药业历史财报）100% 触发 🔴 致命红旗。
+2. **门控机检测试**: 针对构造的“命中致命红旗但决策判定为买入”的反向测试用例，`validator.py` 必须 100% 拦截并**以纠代抛**——将决断档位降级为 `等证据临界(观察)`（存在 🔴 时降级为 `回避`）、`position_cap` 清零，并把降级结果同步回 ⑤决策节点。
+   > ★ **C-6 裁决（已闭环，见 `docs/UNIMPLEMENTED_WORKLIST.md`）**：本节原文要求“抛出异常”，与 `docs/ARCHITECTURE.md` §5 的“以纠代抛降级清零”冲突。**以代码实现为准**：生产环境一律“以纠代抛”，`LintError` 保留为兼容语义但从不 raise。理由：抛异常会让 `screen` 全市场跑批因单票异常整体中断，与无人值守稳健性要求相悖。
 3. **全市场性能验收**: `screen` 命令在 15 秒内完成全市场扫描并输出格式化表格。
 4. **单股端到端验收**: `analyze` 命令在 2 秒内完成指定股票的全套分析并打印决断卡。
 

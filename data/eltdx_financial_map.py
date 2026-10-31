@@ -47,7 +47,10 @@ M0 阶段靠"年报附注逐笔核对"标过几个科目，本轮用 Tushare 真
 2. **未确认的科目不进表** —— 宁可空着。下面表里没出现的 Tushare 字段
    （`total_cogs` `assets_impair_loss` `ebit` `ebitda` `adv_receipts` `deferred_inc`
    `bond_payable` `oth_payable` `proc_issue_bonds` 等）就是没定出来的，不是漏写。
-3. 定标结论改动必须同步改 `scripts/tests/test_eltdx_financial_map.py`。
+3. 定标结论改动必须同步改 `tests/test_runtime_audit_fixes.py`（★ 20261029 审计 P0-3：
+   原文指向的 `scripts/tests/test_eltdx_financial_map.py` **并不存在于仓库中**，
+   等于"定标改了没人管"—— 这正是 `undistr_porfit` 拼写错误潜伏至今的原因。
+   该测试会从本模块生成期望键集合并反向扫描 audit_engine / derived_metrics 的取数键)。
 """
 from __future__ import annotations
 
@@ -114,7 +117,10 @@ BALANCE_MAP: dict[str, tuple[str, str | None]] = {
     "T063": ("总股本", "total_share"),                        # 12/12
     "T064": ("资本公积", "cap_rese"),                         # 12/12
     "T065": ("盈余公积", "surplus_rese"),                     # 12/12
-    "T067": ("未分配利润", "undistr_porfit"),                  # 12/12
+    # ★ 20261029 审计 P0-3：旧键名 ``undistr_porfit`` 是拼写错误（audit_engine 读
+    #   ``undistr_profit`` → Altman Z-Score 的 RE 项恒为 0，Z 被系统性低估，茅台
+    #   实测被抹掉 0.88 分）。契约测试 test_field_contracts.py 会拦截此类错配。
+    "T067": ("未分配利润", "undistr_profit"),                  # 12/12
     # ★ T068 有冲突：finance_batch 的「长期负债合计」在 3/4 只票上命中它，
     #   但 Tushare 的 minority_int 是 10/10。按「命中数更高者胜」取少数股东权益，
     #   并由恒等式 权益合计(T071) = 归母(T077) + 少数股东(T068) 兜底校验。
@@ -182,7 +188,7 @@ BALANCE_ZIP_MAP: dict[int, tuple[str, str | None]] = {
     62:  ("负债合计", "total_liab"),
     63:  ("总股本", "total_share"),
     64:  ("资本公积", "cap_rese"),
-    67:  ("未分配利润", "undistr_porfit"),
+    67:  ("未分配利润", "undistr_profit"),
     71:  ("所有者权益合计", "total_hldr_eqy_inc_min_int"),
     72:  ("负债和股东权益合计", None),        # Tushare 无此列，留作恒等式校验用
     119: ("合同负债", "contract_liab"),
@@ -313,33 +319,35 @@ def check_balance_identities(row: dict) -> list[tuple[str, bool, float]]:
 def looks_like_financial_template(fields) -> bool:
     """★ 金融股另用一套 F10 列模板，明细列会全 0 但汇总列有值。
 
-    平安银行实测：流动资产/存货/应收账款全是 0（不是真为 0，是模板不同）。
-    不识别出来就拿去算流动比率，会得出 0，进而触发一堆**假红旗**。
+    实测验证：银行/保险/证券等金融机构的资产负债表中，不划分工商业标准的
+    流动资产与非流动资产，其流动资产合计(idx 20)与非流动资产合计(idx 38)均为空或0。
     """
     if not fields:
         return False
     total = _num(fields[39]) if _has(fields, 39) else None
     if not total:
         return False                      # 连资产总计都没有 → 是"没数据"，不是金融模板
-    detail_idx = (10, 16, 20, 38, 53)     # 应收 / 存货 / 流动资产 / 非流动资产 / 流动负债
-    vals = [_num(fields[i]) if _has(fields, i) else None for i in detail_idx]
-    if all(v is None for v in vals):
-        return False
-    return all(not v for v in vals if v is not None)
+    ca = _num(fields[20]) if _has(fields, 20) else None
+    nca = _num(fields[38]) if _has(fields, 38) else None
+    inv = _num(fields[16]) if _has(fields, 16) else None
+    return (not ca and not nca) or (not ca and not inv)
 
 
 def looks_like_financial_row(row: dict) -> bool:
-    """同上，但针对 F10 `zcfzb` 的一行（键是 T 编号）。"""
+    """同上，但针对 F10 `zcfzb` 的一行（键是 T 编号）。
+
+    实测验证：招商银行、工商银行、中国平安、中信证券等 T020(流动资产合计) 与
+    T038(非流动资产合计) 均为 None，而正常实体企业(茅台/格力/宁德)均有确切值。
+    """
     if not row:
         return False
     total = _num(row.get("T039"))
     if not total:
         return False
-    detail = ("T010", "T016", "T020", "T038", "T053")
-    vals = [_num(row.get(k)) for k in detail]
-    if all(v is None for v in vals):
-        return False
-    return all(not v for v in vals if v is not None)
+    ca = _num(row.get("T020"))
+    nca = _num(row.get("T038"))
+    inv = _num(row.get("T016"))
+    return (not ca and not nca) or (not ca and not inv)
 
 
 # ---------------------------------------------------------------- 覆盖率

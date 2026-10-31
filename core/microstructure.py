@@ -28,8 +28,8 @@ class MicrostructureProfile:
     smart_q: float                      # 聪明钱 Q 因子 (VWAP_smart / VWAP_all)
     smart_vwap: float                   # 聪明钱加权均价
     all_vwap: float                     # 全市场加权均价
-    smart_buy_ratio: float              # 聪明钱时段主动推升成交占比 (%)
-    smart_sell_ratio: float             # 聪明钱时段打压派发成交占比 (%)
+    smart_buy_ratio: float              # 聪明钱时段推升成交占比 (%) —— ★ 口径见 smart_flow_basis
+    smart_sell_ratio: float             # 聪明钱时段打压成交占比 (%) —— ★ 口径见 smart_flow_basis
     smart_phase: str                    # 聪明钱意图: ACCUMULATION / DISTRIBUTION / PASSIVE_FALL / NEUTRAL
     apm_pattern: str                    # 日内时段形态: AM_PUMP_PM_DUMP / PM_ABSORPTION / PASSIVE_DRIFT / NEUTRAL
     am_return_pct: float                # 早盘平均收益率 (%)
@@ -53,6 +53,18 @@ class MicrostructureProfile:
     stage_code: str = "STAGE_3_QUIET_WASHOUT"
     anti_spoofing_summary: list[str] = field(default_factory=list)
     scores: dict[str, float] = field(default_factory=dict)
+    #: 相对化基线（由主力引擎透传，供 AI 判断层做定性校验）。
+    #:   vol_ratio_20d     当日成交额 ÷ 近20日均量 —— 判断「枯竭 vs 放量」
+    #:   avg_amplitude_5d  5日平均振幅 —— 该股**自身**波动基线，判断涨跌是否显著
+    #: ★ 这两个是**相对标的自身**的量；绝对成交额/绝对涨幅跨市值不可比。
+    vol_ratio_20d: float = 1.0
+    avg_amplitude_5d: float = 0.0
+    #: ★ 20261029 审计 P1-5：买卖占比的**真实口径**。
+    #:   ``"minute_bar_proxy"`` = 高效分钟里「收盘 ≥ 开盘」的分钟成交量占比，
+    #:   **不是**逐笔成交的主动买卖方向（后者需要带买卖方向的逐笔数据，本项目未接入）。
+    #:   保留数值作弱代理，但呈现层必须如实标注，严禁写成"主力主动买入占比"。
+    smart_flow_basis: str = "minute_bar_proxy"
+    smart_flow_is_verified: bool = False
 
 
 class MicrostructureAnalyzer:
@@ -72,6 +84,11 @@ class MicrostructureAnalyzer:
         float_share: float = 0.0,
         quote: dict[str, Any] | None = None,
         ticker: str = "DEFAULT",
+        *,
+        depth: Any | None = None,
+        buy_sell_strength: Any | None = None,
+        auction_series: Any | None = None,
+        trades_today: Any | None = None,
     ) -> MicrostructureProfile:
         """分析 5 分钟 K 线、集合竞价、中周期换手沉淀与主力生命周期。"""
         if not five_min_bars or len(five_min_bars) < 20:
@@ -105,6 +122,8 @@ class MicrostructureAnalyzer:
                 "ret_pct": ret_pct,
                 "raw_ret": raw_ret,
                 "s_metric": s_metric,
+                # ★ P1-5：这是**分钟 K 线口径的涨跌标记**（close >= open），
+                #   不是逐笔成交的主动买卖方向。见下方 smart_flow_basis 说明。
                 "is_up": cl >= op,
             })
 
@@ -136,6 +155,43 @@ class MicrostructureAnalyzer:
         smart_down_vol = smart_df[~smart_df["is_up"]]["volume"].sum()
         smart_buy_ratio = round((smart_up_vol / smart_vol) * 100.0, 1) if smart_vol > 0 else 50.0
         smart_sell_ratio = round((smart_down_vol / smart_vol) * 100.0, 1) if smart_vol > 0 else 50.0
+        smart_flow_basis = "minute_bar_proxy"
+        smart_flow_is_verified = False
+
+        # ★ 20261030 P1-5 闭环：若提供了逐笔成交 (trades_today) 或分钟委买委卖力度 (buy_sell_strength) 或内外盘 (depth)，
+        #   用真实主动买卖/委买委卖口径替代分钟 K 线涨跌代理，并标记 smart_flow_is_verified = True
+        ticks = getattr(trades_today, "actual_trades", None) or getattr(trades_today, "ticks", None)
+        if ticks:
+            active_ticks = [t for t in ticks if getattr(t, "side", "") in ("buy", "sell")]
+            if active_ticks:
+                buy_v = sum(float(getattr(t, "volume", 0.0) or 0.0) for t in active_ticks if getattr(t, "side", "") == "buy")
+                sell_v = sum(float(getattr(t, "volume", 0.0) or 0.0) for t in active_ticks if getattr(t, "side", "") == "sell")
+                if buy_v + sell_v > 0:
+                    smart_buy_ratio = round((buy_v / (buy_v + sell_v)) * 100.0, 1)
+                    smart_sell_ratio = round((sell_v / (buy_v + sell_v)) * 100.0, 1)
+                    smart_flow_basis = "trade_tick_active"
+                    smart_flow_is_verified = True
+        if not smart_flow_is_verified and depth is not None:
+            recs = getattr(depth, "records", None)
+            if recs:
+                r0 = recs[0]
+                outer_v = float(getattr(r0, "outer_disc", 0.0) or 0.0)
+                inner_v = float(getattr(r0, "inside_dish", 0.0) or 0.0)
+                if outer_v + inner_v > 0:
+                    smart_buy_ratio = round((outer_v / (outer_v + inner_v)) * 100.0, 1)
+                    smart_sell_ratio = round((inner_v / (outer_v + inner_v)) * 100.0, 1)
+                    smart_flow_basis = "depth_outer_inner_disc"
+                    smart_flow_is_verified = True
+        if not smart_flow_is_verified and buy_sell_strength is not None:
+            pts = getattr(buy_sell_strength, "points", None)
+            if pts:
+                b_comm = sum(float(getattr(p, "buy_commission", 0.0) or 0.0) for p in pts)
+                s_comm = sum(float(getattr(p, "sell_commission", 0.0) or 0.0) for p in pts)
+                if b_comm + s_comm > 0:
+                    smart_buy_ratio = round((b_comm / (b_comm + s_comm)) * 100.0, 1)
+                    smart_sell_ratio = round((s_comm / (b_comm + s_comm)) * 100.0, 1)
+                    smart_flow_basis = "minute_buy_sell_strength"
+                    smart_flow_is_verified = True
 
         # 判定聪明钱意图 (初筛)
         if q_factor < 0.985 and smart_buy_ratio > 52.0:
@@ -190,6 +246,16 @@ class MicrostructureAnalyzer:
             auction_amt_wan = round(raw_amt / 10000.0, 1)
             raw_chg = getattr(auction_data, "open_change_pct", 0.0) or 0.0
             auction_chg_pct = round(raw_chg, 2)
+        if auction_amt_wan <= 0.0 and auction_series is not None:
+            apts = getattr(auction_series, "points", None)
+            if apts:
+                matched_pts = [p for p in apts if float(getattr(p, "matched_volume", 0.0) or 0.0) > 0 and float(getattr(p, "price", 0.0) or 0.0) > 0]
+                if matched_pts:
+                    last_pt = matched_pts[-1]
+                    auction_amt_wan = round(float(last_pt.price) * float(last_pt.matched_volume) * 100.0 / 10000.0, 1)
+                    pre_c = float((quote or {}).get("pre_close") or 0.0)
+                    if pre_c > 0:
+                        auction_chg_pct = round((float(last_pt.price) - pre_c) / pre_c * 100.0, 2)
 
         # 5. 中周期筹码换手与价格带位置测算 (20~60日换手沉降)
         cum_turnover_20d = 0.0
@@ -218,6 +284,15 @@ class MicrostructureAnalyzer:
             "tail_vol_ratio": tail_vol_ratio,
             "auction_open_amt_wan": auction_amt_wan,
             "auction_open_chg_pct": auction_chg_pct,
+            # ★ 20261029 审计 P1-5：``smart_buy_ratio`` / ``smart_sell_ratio`` 的真实口径是
+            #   「高效分钟里**上涨分钟的成交量占比**」（分钟 K 线的 close >= open），
+            #   **不是**逐笔成交的主动买卖方向 —— 后者需要带买卖方向的逐笔数据，
+            #   本项目当前未接入（当前默认采用分钟级K线近似以保证全市场轻量级吞吐；EltdxCollector 已提供 get_trades_today / get_buy_sell_strength / get_depth 原生包装）。两者在震荡分钟里
+            #   差异极大（一根上下影线都有的分钟 K 既非全买也非全卖）。
+            #   保留数值（作为弱代理），但必须把口径写在返回值里，让下游与呈现层
+            #   如实标注，严禁写成"主力主动买入占比"。
+            "smart_flow_basis": smart_flow_basis,
+            "smart_flow_is_verified": smart_flow_is_verified,
         }
         calc_quote = quote or {}
         if current_price > 0 and "close" not in calc_quote:
@@ -283,6 +358,10 @@ class MicrostructureAnalyzer:
             stage_code=decision.stage_code.value,
             anti_spoofing_summary=decision.anti_spoofing.summary_lines(),
             scores=decision.scores,
+            vol_ratio_20d=float(decision.baselines.get("vol_ratio_20d", 1.0)),
+            avg_amplitude_5d=float(decision.baselines.get("avg_amplitude_5d", 0.0)),
+            smart_flow_basis=smart_flow_basis,
+            smart_flow_is_verified=smart_flow_is_verified,
         )
 
     def _detect_main_force_stage(

@@ -85,12 +85,21 @@ ast-trader/
 │   ├── audit_engine.py            # 11 经典本土会计审计扫雷引擎 (Beneish, Piotroski等)
 │   ├── execution_playbook.py      # 实盘双轨战术与仓位执行手册
 │   ├── capital_matrix.py          # 四维资金博弈雷达
-│   ├── youzi_personas.py          # 11 位一线知名游资风格契合度画像
+│   ├── youzi_personas.py          # 一线知名游资风格契合度画像与席位库
+│   ├── investor_panel.py          # 买方名人堂陪审团多空投票
+│   ├── industry.py                # 行业归属解析 (审计模型适用性准入)
+│   ├── seat_matcher.py            # 龙虎榜席位匹配与资金容量射程
+│   ├── trap_detector.py           # 杀猪盘 8 维舆情特征探测
+│   ├── game_features.py           # 短线博弈量价计算器
+│   ├── types.py                   # 中台数据契约类型定义
 │   └── red_flags.py               # 审计与治理红旗聚合与 Top3 提炼
 │
 ├── data/                          # 统一数据采集底层 (通达信 eltdx 引擎)
 │   ├── eltdx_collector.py         # 行情、K线、L2微观、三表、F10、全市场指标
 │   ├── eltdx_client.py            # TCP 连接池管理
+│   ├── eltdx_units.py             # 代码/市场/单位换算 (含北交所 9 开头歧义处理)
+│   ├── eltdx_financial.py         # 财报原始报文解析
+│   ├── eltdx_financial_map.py     # 三表字段映射表
 │   ├── supplement_api.py          # 龙虎榜席位与外部补充通道
 │   └── data_health.py             # 数据通道健康度审计与信息缺口追踪器
 │
@@ -99,7 +108,13 @@ ast-trader/
 │   ├── filter_liquidity.py        # Tier 1 流动性与涨幅初筛
 │   ├── filter_audit.py            # Tier 2 财务排雷一票否决
 │   ├── rank_composite.py          # Tier 3 题材合力打分排序
-│   └── ladder_analyzer.py         # 连板天梯、题材主线与晋级率分析器
+│   ├── ladder_analyzer.py         # 连板天梯、题材主线与晋级率分析器
+│   ├── universe.py                # L0 沪深全量母池: 代码表界定 + reason_code 剔除 + 覆盖率闸门
+│   ├── profile_batch.py           # L1 行情画像批量吞吐 (stock_profile_table, 失败批次不缩池)
+│   ├── funnel_audit.py            # 逐层淘汰归因矩阵: 守恒断言 + 死规则检测
+│   ├── kline_batch.py             # 日K批量吞吐与 MA/均额/量比/VWAP 派生 (26ms/只, 须先压候选)
+│   ├── finance_batch.py           # 财务批量吞吐与 PE/PB/ROE/现金流派生 (静默截断100, 须切批)
+│   └── tracks.py                  # 四轨分流引擎: 轨道 B 弱转强 / C 产业中军 / D 价值成长
 │
 ├── presentation/                  # 结果呈现层
 │   ├── terminal_view.py           # Rich 终端买方决断卡与天梯看板渲染
@@ -108,12 +123,20 @@ ast-trader/
 ├── lint/                          # 质量门控与机检
 │   └── validator.py               # 算术闭合、致命红旗硬锁死与单点真理机检
 │
-├── tests/                         # 自动化测试套件 (74 单元与集成测试，全绿通过)
+├── tests/                         # 自动化测试套件 (558 单元与集成测试，全绿通过)
+│   ├── test_p0_fixes.py           # P0-1~P0-4 修复回归 (39 项)
+│   ├── test_batch1_backfill.py    # 第一批「验收补齐」回归
+│   ├── test_seed_universe.py      # 真实数据种子跑批 (seednet 标记，需联网)
+│   ├── seed_universe.py           # 种子清单、特征契约与漂移探针
+│   ├── helpers_seed.py            # 跑批执行器、不变量断言与摘要采集
+│   └── conftest.py                # 缓存隔离、产物目录隔离与摘要汇聚
 └── docs/                          # 系统深度设计与演进文档
     ├── ARCHITECTURE.md            # 系统架构设计与数据流转规格 (权威鲜活说明)
     ├── PILLARS_AND_METHODOLOGY.md # 五大支柱与投研量化方法论
     ├── ROADMAP_AND_AI_EVOLUTION.md# 终局演进思路与双引擎融合架构
-    └── FUTURE_OPTIMIZATION_SPECIFICATIONS.md # 未实施核心优化点工程规格说明书与预研成果
+    ├── FUTURE_OPTIMIZATION_SPECIFICATIONS.md # 未实施核心优化点工程规格说明书与预研成果
+    ├── SEED_VALIDATION_REPORT.md  # 真实数据种子跑批评估与 P0 修复复核
+    └── UNIMPLEMENTED_WORKLIST.md  # 未实施工作清单与排期跟踪 (权威状态表)
 ```
 
 ---
@@ -123,8 +146,20 @@ ast-trader/
 系统所有核心排雷模型、微观盘口拆单算法、五维因果推导与接口健康度均配备了严格的自动化测试用例：
 ```bash
 pytest tests/
-# 74 passed in 4.19s (100% 绿色通过)
+# 558 passed (100% 绿色通过)
 ```
+
+构成：**537 项离线用例**（审计排雷、微观盘口、状态机、Lint 门控、P0 回归、第一批验收补齐、
+全市场母池界定与漏斗归因、四轨分流判据、F10 多期财报拐点与十大流通股东机构持股、股权质押双口径、
+数据纪律围栏）
+\+ **11 项联网种子用例**（`seednet` 标记，真实行情跑批）。离线子集可无网执行：
+
+```bash
+pytest -m "not seednet"     # 537 passed
+```
+
+> 📋 尚未实施的工作与排期状态，见
+> **[未实施工作清单 (`docs/UNIMPLEMENTED_WORKLIST.md`)](docs/UNIMPLEMENTED_WORKLIST.md)**。
 
 ---
 
@@ -133,4 +168,5 @@ pytest tests/
 * 🏗️ **[系统架构与数据流转规格说明 (`docs/ARCHITECTURE.md`)](docs/ARCHITECTURE.md)**：详细阐述系统各模块交互、数据流时序与接口契约。
 * 🧠 **[五大投研支柱与量化方法论 (`docs/PILLARS_AND_METHODOLOGY.md`)](docs/PILLARS_AND_METHODOLOGY.md)**：质地五问、状态跃迁 $\lambda$、反向 DCF、主力 7 阶段与双轨实战战术的数学实现。
 * 🚀 **[终局演进思路与双引擎架构 (`docs/ROADMAP_AND_AI_EVOLUTION.md`)](docs/ROADMAP_AND_AI_EVOLUTION.md)**：深入探讨确定性量化引擎与大语言模型（LLM）的优劣边界，规划未来「量化底座 + AI 语义协处理器」的融合演进方案。
-* 🔭 **[未实施核心优化点工程规格说明书与预研成果 (`docs/FUTURE_OPTIMIZATION_SPECIFICATIONS.md`)](docs/FUTURE_OPTIMIZATION_SPECIFICATIONS.md)**：为 AI 语义协处理器、板块相对强弱轮动（RS Matrix）、龙虎榜席位协同及实盘账本多日回测提供严密的数学模型、接口契约与第三方 AI 审计验收标准。
+* 🔭 **[未实施核心优化点工程规格说明书与预研成果 (`docs/FUTURE_OPTIMIZATION_SPECIFICATIONS.md`)](docs/FUTURE_OPTIMIZATION_SPECIFICATIONS.md)**
+* ⚖️ **[外部项目对比分析：`DR-lin-eng/stock-scanner` vs `ast-trader` (`docs/COMPARISON_stock-scanner.md`)](docs/COMPARISON_stock-scanner.md)**：从分析目标、处理流程、技术实现、数据获取四个维度逐项对比，并总结双方优缺点与可迁移点。：为 AI 语义协处理器、板块相对强弱轮动（RS Matrix）、龙虎榜席位协同及实盘账本多日回测提供严密的数学模型、接口契约与第三方 AI 审计验收标准。

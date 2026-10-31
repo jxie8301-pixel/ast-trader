@@ -106,3 +106,30 @@ class SeatMatcher:
         if not info:
             return True
         return info["min_market_cap_yi"] <= market_cap_yi <= info["max_market_cap_yi"]
+
+
+def evaluate_lhb_dump_risk(matched_or_records: list[dict[str, Any]] | None) -> tuple[bool, str]:
+    """评估龙虎榜席位中的量化高频打板砸盘风险 (提示性预警)."""
+    if not matched_or_records:
+        return False, ""
+
+    quant_count = 0
+    has_institution = False
+
+    for item in matched_or_records:
+        y_name = item.get("youzi_name", "")
+        s_name = item.get("seat_name", "")
+        if "量化" in y_name or any(qs in s_name for qs in ("中金上海分公司", "华泰证券总部", "中信证券总部")):
+            quant_count += 1
+        if "机构专用" in y_name or "机构专用" in s_name:
+            has_institution = True
+
+    if quant_count >= 1 and not has_institution:
+        warning = (
+            f"游资博弈警示: 龙虎榜检测到知名量化打板高频席位(命中 {quant_count} 家)，"
+            "缺乏机构中长线锁仓，次日 9:35 前防范抢跑核按钮砸盘风险，切忌盲目追高，建议观察分时承接后再行动 (提示性预警，未阻断)"
+        )
+        return True, warning
+
+    return False, ""
+

@@ -1,0 +1,67 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "ai_enrichment.schema.json",
+  "title": "AST-Trader AI 语义增强输出契约",
+  "description": "AI 协处理器五个模块的统一输出契约。★ 三条硬边界在此被机检化：(1) 未弃权必须带 ≥1 条证据引用（无引用即弃权）；(2) 弃权必须给原因（禁止「无法判断」这类伪装结论）；(3) 只有 nominations 一个风险通道，没有任何『加信心』字段。",
+  "type": "object",
+  "required": ["module"],
+  "properties": {
+    "module": {
+      "enum": ["moat", "catalyst", "theme_purity", "governance", "tactic", "mainforce",
+               "node_quality", "node_state", "node_odds", "node_path", "node_decision"]
+    },
+    "judgment": {
+      "description": "语义判定结论。为 null 表示 AI 未给判定（等价于弃权）。",
+      "type": ["string", "null"]
+    },
+    "verdict": {
+      "description": "判断链五节点（node_*）的判定结论。★ 取值域由代码侧 NODE_VERDICT_DOMAIN 严格约束，越界即弃权并回退规则判定 —— 禁止模型自造中间档。",
+      "type": ["string", "null"]
+    },
+    "analysis": {
+      "description": "★ 节点的**分析产物**（不是结论，是推导过程）。判断链五节点要求模型自己分析而非填表，其推导必须落到这里供脚本做算术闭合与一致性机检。字段由各节点判据手册约定：derivation（估值推导）/ sub_verdicts（子判定）/ critical_wait（该等什么）/ left_tail_list（左尾清单）/ falsification（证伪清单）/ cap_check（封顶检查）/ action_detail（裁决理由）/ verdict_note（口径分歧）。",
+      "type": ["object", "null"]
+    },
+    "confidence": {
+      "description": "自检置信度。★ 只用于日志与观测，**不参与**任何数值计算与仓位决策。",
+      "type": ["number", "null"],
+      "minimum": 0,
+      "maximum": 1
+    },
+    "evidence": {
+      "type": "array",
+      "items": { "$ref": "common.schema.json#/$defs/evidence_ref" }
+    },
+    "nominations": {
+      "type": "array",
+      "items": { "$ref": "common.schema.json#/$defs/red_flag_nomination" }
+    },
+    "abstained": { "type": "boolean" },
+    "reason": { "type": "string" }
+  },
+  "additionalProperties": false,
+  "allOf": [
+    {
+      "comment": "未弃权 → 必须给出至少一条可引用证据，否则视为幻觉风险。",
+      "if": {
+        "properties": { "abstained": { "const": false } },
+        "required": ["abstained"]
+      },
+      "then": {
+        "required": ["evidence"],
+        "properties": { "evidence": { "minItems": 1 } }
+      }
+    },
+    {
+      "comment": "弃权 → 必须写明原因，禁止静默失败。",
+      "if": {
+        "properties": { "abstained": { "const": true } },
+        "required": ["abstained"]
+      },
+      "then": {
+        "required": ["reason"],
+        "properties": { "reason": { "minLength": 1 } }
+      }
+    }
+  ]
+}

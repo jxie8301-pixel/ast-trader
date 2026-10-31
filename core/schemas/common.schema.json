@@ -1,0 +1,74 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "common.schema.json",
+  "title": "AST-Trader 公共契约定义",
+  "description": "子判定、五支柱判定枚举、证据引用、红旗提名等跨 Schema 复用的定义。借鉴上游 scripts/schemas/common.schema.json 的『公共 $defs + 跨文件 $ref』结构，但按本项目实际决断卡取值域定制。",
+  "$defs": {
+    "judgment": {
+      "description": "子判定三态。与上游 node-quality 手册一致。",
+      "enum": ["✓", "⚠️", "✗"]
+    },
+    "quality_verdict": {
+      "description": "①质地判定。来源 lint/validator.py VERDICT_DOMAINS。",
+      "enum": ["好", "部分好", "不好"]
+    },
+    "state_verdict": {
+      "description": "②状态判定。来源 lint/validator.py VERDICT_DOMAINS。",
+      "enum": ["↑变好+证据确认", "↑变好但仅注意力·未确认", "↓变差", "横盘"]
+    },
+    "odds_verdict": {
+      "description": "③赔率判定。'未核验(...)' 是数据缺失时的合法弃权态，不是伪造值。",
+      "enum": [
+        "便宜(有余地)",
+        "合理",
+        "已被价格计入",
+        "买完完美未来",
+        "未核验(财务缺失)",
+        "未核验(净利润为负)"
+      ]
+    },
+    "path_verdict": {
+      "description": "④路径判定。",
+      "enum": ["可承受", "高尾险·不可承受", "未核验(微观缺失)"]
+    },
+    "sub_verdict": {
+      "description": "质地五问的单条子判定。evidence 必填且非空 —— 没有证据的判定不允许进卡。",
+      "type": "object",
+      "required": ["question", "judgment", "evidence"],
+      "properties": {
+        "question": { "type": "string", "minLength": 1 },
+        "judgment": { "$ref": "#/$defs/judgment" },
+        "evidence": { "type": "string", "minLength": 1 }
+      },
+      "additionalProperties": true
+    },
+    "evidence_ref": {
+      "description": "证据引用。核心约束：quote 必须是**原文片段**而非转述，否则无法核验。page 为 PDF 物理页码（与上游 pdf_reader 一致，非印刷页码）。",
+      "type": "object",
+      "required": ["source", "quote"],
+      "properties": {
+        "source": {
+          "enum": ["announcement", "metrics", "news", "report", "filing"]
+        },
+        "url": { "type": ["string", "null"] },
+        "page": { "type": ["integer", "null"], "minimum": 1 },
+        "quote": { "type": "string", "minLength": 1, "maxLength": 2000 }
+      },
+      "additionalProperties": false
+    },
+    "red_flag_nomination": {
+      "description": "写手（AI）提名的红旗。★ 单向阀：这是 AI 影响结论的**唯一**通道，只能加风险，没有『加信心』字段。",
+      "type": "object",
+      "required": ["id", "level", "title", "evidence"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "level": { "enum": ["🔴", "🟠", "🟡"] },
+        "title": { "type": "string", "minLength": 1 },
+        "evidence": { "type": "string", "minLength": 1 },
+        "source": { "const": "nomination" },
+        "node": { "enum": ["quality", "state", "odds", "path"] }
+      },
+      "additionalProperties": true
+    }
+  }
+}

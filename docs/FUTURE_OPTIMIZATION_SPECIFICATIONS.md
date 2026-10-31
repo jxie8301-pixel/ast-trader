@@ -3,6 +3,13 @@
 
 > **文档性质**：本文档为 AST-Trader（A股买方穿透审计与微观主力博弈量化投研系统）尚未实施的具体优化点系统规格书与预研固化成果，为后续工程实施、代码重构及第三方 AI 架构审计提供权威技术依据。
 > **基线代码状态**：Git Commit `d19fbde`（74 项单元与集成测试 100% 绿色通过，P0~P2 架构债务全面闭环）。
+>
+> ⚠️ **基线数字已过时（文档追踪滞后）**：当前实测为 **387 项**（376 离线 + 11 `seednet`）。
+> 另注：本文档 §2 的「优化点一 AI 语义协处理器」与 §6.2 三步走计划中的 P3，
+> **代码侧已提前落地** —— `core/ai_coprocessor/` 已实装 provider / cache / guard /
+> context 与 5 份 prompt，并在 `cli` / `judgment_chain` / `audit_engine` /
+> `execution_playbook` 完成 5/5 接线；仅 `config.AI_ENABLED` 默认 `False` 处于休眠。
+> 详见 `docs/UNIMPLEMENTED_WORKLIST.md` 的 A-1。
 
 ---
 
@@ -87,7 +94,8 @@ class AISemanticCoprocessor:
         model_name: str = "deepseek-r1:8b", # 本地轻量开源模型
         api_base: str = "http://localhost:11434",
         api_key: str | None = None,
-        timeout_seconds: float = 4.0,       # 极速超时熔断 (买方实操响应要求)
+        # ★ 不写死数值：统一取超时总纲 config.TIMEOUT_AI（当前 60s，AI 分析接口）
+        timeout_seconds: float = config.TIMEOUT_AI,
     ) -> None: ...
 
     def enrich(self, card: dict[str, Any], raw_texts: dict[str, str]) -> dict[str, Any]:
@@ -132,7 +140,7 @@ assert enriched_card["quality_verdict"] == locked_quality_verdict, "Guardrail �
 ```
 
 ### 2.5 离线启发式双轨降级实现
-当用户未启动本地 Ollama 守护进程、或无网络连接、或模型调用超时（$>4.0$ 秒）时，协处理器**无缝自动降级至离线买方专家规则库**（已在 `scratch/spike_ai_coprocessor.py` 中完整验证通过），保证出报耗时仍控制在 1 秒以内，且 0 报错。
+当用户未启动本地 Ollama 守护进程、或无网络连接、或模型调用超时（超过 `config.TIMEOUT_AI`，当前 60 秒）时，协处理器**无缝自动降级至离线买方专家规则库**（已在 `scratch/spike_ai_coprocessor.py` 中完整验证通过），保证出报耗时仍控制在 1 秒以内，且 0 报错。
 
 ---
 

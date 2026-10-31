@@ -55,7 +55,7 @@ def test_stage_1_accumulation_detection(engine):
         "ma5": 10.0,
         "ma20": 10.2,
     }
-    quote = {"close": 9.95, "open": 9.90, "high": 10.10, "low": 9.85, "turnover": 2.5, "amount": 25000000.0}
+    quote = {"close": 9.95, "open": 9.90, "high": 10.10, "low": 9.85, "turnover_ratio": 2.5, "amount": 25000000.0}
 
     dec = engine.evaluate("000001.SZ", current_price=9.95, quote=quote, daily_df=daily_df, microstructure=micro, momentum=mom)
 
@@ -91,7 +91,7 @@ def test_stage_2_bear_trap_washout_detection(engine):
         "ma5": 18.2,
         "ma20": 18.5,  # 现价 17.5 破位 MA20
     }
-    quote = {"close": 17.50, "open": 18.00, "high": 18.10, "low": 17.40, "pct_chg": -3.0, "turnover": 1.8, "amount": 35000000.0}
+    quote = {"close": 17.50, "open": 18.00, "high": 18.10, "low": 17.40, "pct_chg": -3.0, "turnover_ratio": 1.8, "amount": 35000000.0}
 
     dec = engine.evaluate("000002.SZ", current_price=17.50, quote=quote, daily_df=daily_df, microstructure=micro, momentum=mom)
 
@@ -126,7 +126,7 @@ def test_stage_3_quiet_washout_detection(engine):
         "ma5": 15.1,
         "ma20": 14.8,
     }
-    quote = {"close": 15.0, "open": 15.0, "high": 15.1, "low": 14.9, "turnover": 2.0, "amount": 30000000.0}
+    quote = {"close": 15.0, "open": 15.0, "high": 15.1, "low": 14.9, "turnover_ratio": 2.0, "amount": 30000000.0}
 
     dec = engine.evaluate("000003.SZ", current_price=15.0, quote=quote, daily_df=daily_df, microstructure=micro, momentum=mom)
 
@@ -163,7 +163,7 @@ def test_stage_4_healthy_markup_detection(engine):
         "ma20": 21.0,
         "ma5_bias": 4.2,
     }
-    quote = {"close": 24.50, "open": 23.80, "high": 24.80, "low": 23.60, "turnover": 8.5, "amount": 180000000.0, "pct_chg": 5.2}
+    quote = {"close": 24.50, "open": 23.80, "high": 24.80, "low": 23.60, "turnover_ratio": 8.5, "amount": 180000000.0, "pct_chg": 5.2}
 
     dec = engine.evaluate("000004.SZ", current_price=24.50, quote=quote, daily_df=daily_df, microstructure=micro, momentum=mom)
 
@@ -208,7 +208,7 @@ def test_stage_5_exhaustion_acceleration_lockdown(engine):
         "open": 12.00,
         "high": 12.00,
         "low": 12.00,
-        "turnover": 6.8,  # 高位缩量加速
+        "turnover_ratio": 6.8,  # 高位缩量加速
         "pct_chg": 10.0,
         "amount": 90000000.0,
     }
@@ -248,7 +248,7 @@ def test_stage_6_distribution_detection(engine):
         "ma20": 31.0,
     }
     ladder = {"board_level": 2, "broken_count": 3}  # 日内多次炸板
-    quote = {"close": 32.50, "open": 34.00, "high": 35.20, "low": 32.00, "pct_chg": -1.5, "turnover": 22.0, "amount": 550000000.0}
+    quote = {"close": 32.50, "open": 34.00, "high": 35.20, "low": 32.00, "pct_chg": -1.5, "turnover_ratio": 22.0, "amount": 550000000.0}
 
     dec = engine.evaluate("000006.SZ", current_price=32.50, quote=quote, daily_df=daily_df, microstructure=micro, momentum=mom, ladder_info=ladder)
 
@@ -282,7 +282,7 @@ def test_stage_7_passive_drift_detection(engine):
         "ma5": 87.0,
         "ma20": 95.0,
     }
-    quote = {"close": 84.50, "open": 86.00, "high": 86.50, "low": 84.00, "pct_chg": -2.2, "turnover": 0.8, "amount": 60000000.0}
+    quote = {"close": 84.50, "open": 86.00, "high": 86.50, "low": 84.00, "pct_chg": -2.2, "turnover_ratio": 0.8, "amount": 60000000.0}
 
     dec = engine.evaluate("002850.SZ", current_price=84.50, quote=quote, daily_df=daily_df, microstructure=micro, momentum=mom)
 
@@ -302,7 +302,7 @@ def test_anti_spoofing_wash_trading_penalty(engine):
     micro = {"smart_q": 1.000, "smart_vwap": 10.0, "all_vwap": 10.0, "smart_buy_ratio": 50.0, "smart_sell_ratio": 50.0}
     mom = {"overhead_chip_pct": 10.0, "is_bullish_ma": True, "ma5": 10.0, "ma20": 9.5}
     # 换手高达 18%，但涨幅仅 +0.2%，对倒自成交
-    quote = {"close": 10.02, "open": 10.00, "high": 10.10, "low": 9.95, "pct_chg": 0.2, "turnover": 18.0, "amount": 150000000.0}
+    quote = {"close": 10.02, "open": 10.00, "high": 10.10, "low": 9.95, "pct_chg": 0.2, "turnover_ratio": 18.0, "amount": 150000000.0}
 
     dec = engine.evaluate("000008.SZ", current_price=10.02, quote=quote, daily_df=daily_df, microstructure=micro, momentum=mom)
 
@@ -327,7 +327,7 @@ def test_anti_spoofing_fake_breakout_penalty(engine):
     }
     mom = {"overhead_chip_pct": 12.0, "is_bullish_ma": True, "ma5": 19.0, "ma20": 17.5}
     # 冲高 21.50 元创 60 日新高，但收盘大幅回落至 19.80 元留长上影线
-    quote = {"close": 19.80, "open": 19.50, "high": 21.50, "low": 19.40, "pct_chg": 1.5, "turnover": 10.0, "amount": 120000000.0}
+    quote = {"close": 19.80, "open": 19.50, "high": 21.50, "low": 19.40, "pct_chg": 1.5, "turnover_ratio": 10.0, "amount": 120000000.0}
 
     dec = engine.evaluate("000009.SZ", current_price=19.80, quote=quote, daily_df=daily_df, microstructure=micro, momentum=mom)
 
@@ -353,7 +353,7 @@ def test_anti_spoofing_tail_pump_penalty(engine):
         "apm_pattern": "NEUTRAL",
     }
     mom = {"overhead_chip_pct": 15.0, "is_bullish_ma": True, "ma5": 11.5, "ma20": 11.0}
-    quote = {"close": 11.85, "open": 11.50, "high": 11.90, "low": 11.45, "pct_chg": 3.0, "turnover": 4.5, "amount": 40000000.0}
+    quote = {"close": 11.85, "open": 11.50, "high": 11.90, "low": 11.45, "pct_chg": 3.0, "turnover_ratio": 4.5, "amount": 40000000.0}
 
     dec = engine.evaluate("000010.SZ", current_price=11.85, quote=quote, daily_df=daily_df, microstructure=micro, momentum=mom)
 
@@ -367,7 +367,7 @@ def test_state_machine_persistence_and_instant_circuit_breaker(engine):
     engine.reset_state(ticker)
 
     # 第 1 步：处于蓄势洗盘期
-    q_dict = {"close": 10.0, "open": 10.0, "turnover": 2.0}
+    q_dict = {"close": 10.0, "open": 10.0, "turnover_ratio": 2.0}
     dec1 = engine.evaluate(ticker, current_price=10.0, quote=q_dict)
     assert dec1.stage_code == StageCode.STAGE_3_QUIET_WASHOUT
 
@@ -378,7 +378,7 @@ def test_state_machine_persistence_and_instant_circuit_breaker(engine):
         "smart_phase": "DISTRIBUTION",
         "apm_pattern": "AM_PUMP_PM_DUMP",
     }
-    dist_quote = {"close": 9.5, "open": 10.5, "pct_chg": -5.0, "turnover": 15.0, "amount": 80000000.0}
+    dist_quote = {"close": 9.5, "open": 10.5, "pct_chg": -5.0, "turnover_ratio": 15.0, "amount": 80000000.0}
     dec2 = engine.evaluate(ticker, current_price=9.5, quote=dist_quote, microstructure=dist_micro)
 
     assert dec2.stage_code == StageCode.STAGE_6_DISTRIBUTION

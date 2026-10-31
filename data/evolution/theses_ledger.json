@@ -1,0 +1,357 @@
+[
+  {
+    "thesis_id": "002850_20261031_0292",
+    "ticker": "002850",
+    "name": "科达利",
+    "trade_date": "2026-10-31",
+    "decision_gear": "等证据临界(观察)",
+    "position_cap": 0.0,
+    "tactical_levels": {},
+    "falsification_lines": [],
+    "one_line_summary": "",
+    "status": "PENDING",
+    "created_at": 1793440292.286497,
+    "verified_at": null,
+    "verification_notes": ""
+  },
+  {
+    "thesis_id": "002850.SZ_20261030_1209",
+    "ticker": "002850.SZ",
+    "name": "科达利",
+    "trade_date": "20261030",
+    "decision_gear": "等证据临界(观察)",
+    "position_cap": 0.0,
+    "tactical_levels": {
+      "target": 0.0
+    },
+    "falsification_lines": [
+      "以下四条均锚定尚未披露的 2026 年报（period 20261231，公司当前最新披露为 2026 三季报），时间窗落在未来，可核销：①单季毛利率：以 2026 年报全年累计毛利率减 2026 三季报前三季度累计毛利率，得出 2026Q4 单季毛利率（口径=累计相减，非用累计值冒充单季）；若该单季值较 2026 三季报单季毛利率（三季报累计减中报累计）环比下滑≥2 个百分点，退出。②自由现金流：若 2026 年报经营性现金流净额同比转负，且『经营现金流净额 − 购建固定资产支付现金』在 2026 年报与 2026 三季报两个口径上连续为负且负值扩大，减仓复核。③盈余质量：若下期披露的 Beneish M-Score 由灰色地带进入操纵区（M-Score > -1.78），退出。④审计与非标：若 2026 年报审计意见由标准无保留意见变为带强调事项段、保留或无法表示意见，或披露诉讼/大额减值/立案调查类公告，立即退出。注：以上均未采用高于公司已实现水平的绝对阈值，避免写成当天即触发的伪门槛。",
+      "必须等待日线重新站上 5 日线进行右侧确认；若次日放量继续单边砸盘，则假破位演化为真破位，严禁盲目加仓！"
+    ],
+    "one_line_summary": "科达利：先看着 —— 等证据落地再决定，现在不下注。不建议占用资金。判断错了就退：以下四条均锚定尚未披露的 2026 年报（period 20261231，公司当前最新披露为 2026 三季报），时间窗落在未来，可核销：①单季毛利率：以 2026 年报全年累计毛利率减 2026 三季报前三季度累计毛利率，得出 2026Q4 单季毛利率（口径=累计相减，非用累计值冒充单季）；",
+    "status": "PENDING",
+    "created_at": 1793451209.9593482,
+    "verified_at": null,
+    "verification_notes": ""
+  },
+  {
+    "thesis_id": "603355.SH_20261030_0882",
+    "ticker": "603355.SH",
+    "name": "莱克电气",
+    "trade_date": "20261030",
+    "decision_gear": "观察",
+    "position_cap": 0.0,
+    "tactical_levels": {
+      "target": 0.0
+    },
+    "falsification_lines": [
+      "以昨日收盘价 (未核验(前收盘价缺失)) 为日内生命线/防线，开盘破位 3 分钟不回立刻清仓止损，绝不参与转跌后的天地板博傻！",
+      "若向下放量击穿 20 日生命均线或知情均线 (32.56元)，则洗盘蓄势宣告失败，立即转入防守。"
+    ],
+    "one_line_summary": "莱克电气：先看着 —— 可以关注，但不急着买。不建议占用资金。判断错了就退：以昨日收盘价 (未核验(前收盘价缺失)) 为日内生命线/防线，开盘破位 3 分钟不回立刻清仓止损，绝不参与转跌后的天地板博傻！",
+    "status": "PENDING",
+    "created_at": 1793450882.5555396,
+    "verified_at": null,
+    "verification_notes": ""
+  },
+  {
+    "thesis_id": "600519_20261028_0590",
+    "ticker": "600519",
+    "name": "贵州茅台",
+    "trade_date": "20261028",
+    "decision_gear": "观察",
+    "position_cap": 0.0,
+    "tactical_levels": {
+      "target": 0.0
+    },
+    "falsification_lines": [
+      "跌破强支撑线 1425.00 元剔除出跟踪池。",
+      "必须等待放量站上 5 日/20 日均线企稳确认；若放量单边砸盘破位，严禁盲目接飞刀加仓！"
+    ],
+    "one_line_summary": "贵州茅台：先看着 —— 可以关注，但不急着买。不建议占用资金。判断错了就退：跌破强支撑线 1425.00 元剔除出跟踪池。",
+    "status": "PENDING",
+    "created_at": 1793450590.5483758,
+    "verified_at": null,
+    "verification_notes": ""
+  },
+  {
+    "thesis_id": "000001_20261028_0598",
+    "ticker": "000001",
+    "name": "测试缺失标的",
+    "trade_date": "20261028",
+    "decision_gear": "等证据临界(观察)",
+    "position_cap": 0.0,
+    "tactical_levels": {
+      "target": 0.0
+    },
+    "falsification_lines": [
+      "跌破强支撑线 9.50 元剔除出跟踪池。",
+      "必须等待放量站上 5 日/20 日均线企稳确认；若放量单边砸盘破位，严禁盲目接飞刀加仓！"
+    ],
+    "one_line_summary": "测试缺失标的：先看着 —— 等证据落地再决定，现在不下注。不建议占用资金。判断错了就退：跌破强支撑线 9.50 元剔除出跟踪池。",
+    "status": "PENDING",
+    "created_at": 1793450598.5763874,
+    "verified_at": null,
+    "verification_notes": ""
+  },
+  {
+    "thesis_id": "002273_20261028_0598",
+    "ticker": "002273",
+    "name": "水晶光电",
+    "trade_date": "20261028",
+    "decision_gear": "期权仓(小)",
+    "position_cap": 0.08,
+    "tactical_levels": {
+      "target": 12.34
+    },
+    "falsification_lines": [
+      "以昨日收盘价 (未核验(前收盘价缺失)) 为日内生命线/防线，开盘破位 3 分钟不回立刻清仓止损，绝不在短线妖股博傻中死扛！",
+      "必须等待放量站上 5 日/20 日均线企稳确认；若放量单边砸盘破位，严禁盲目接飞刀加仓！"
+    ],
+    "one_line_summary": "水晶光电：小仓位试试 —— 题材博弈，只拿一点仓位，错了就走。最多投入总资金的 8%。判断错了就退：以昨日收盘价 (未核验(前收盘价缺失)) 为日内生命线/防线，开盘破位 3 分钟不回立刻清仓止损，绝不在短线妖股博傻中死扛！",
+    "status": "PENDING",
+    "created_at": 1793450598.5934157,
+    "verified_at": null,
+    "verification_notes": ""
+  },
+  {
+    "thesis_id": "600838.SH_20261027_0598",
+    "ticker": "600838.SH",
+    "name": "上海九百",
+    "trade_date": "20261027",
+    "decision_gear": "观察",
+    "position_cap": 0.0,
+    "tactical_levels": {
+      "target": 0.0
+    },
+    "falsification_lines": [
+      "以昨日收盘价 (未核验(前收盘价缺失)) 为日内生命线/防线，开盘破位 3 分钟不回立刻清仓止损，绝不参与转跌后的天地板博傻！",
+      "必须等待放量站上 5 日/20 日均线企稳确认；若放量单边砸盘破位，严禁盲目接飞刀加仓！"
+    ],
+    "one_line_summary": "上海九百：先看着 —— 可以关注，但不急着买。不建议占用资金。判断错了就退：以昨日收盘价 (未核验(前收盘价缺失)) 为日内生命线/防线，开盘破位 3 分钟不回立刻清仓止损，绝不参与转跌后的天地板博傻！",
+    "status": "PENDING",
+    "created_at": 1793450598.2652736,
+    "verified_at": null,
+    "verification_notes": ""
+  },
+  {
+    "thesis_id": "603776.SH_20261027_0597",
+    "ticker": "603776.SH",
+    "name": "永安行",
+    "trade_date": "20261027",
+    "decision_gear": "等证据临界(观察)",
+    "position_cap": 0.0,
+    "tactical_levels": {
+      "target": 0.0
+    },
+    "falsification_lines": [
+      "跌破强支撑线 14.44 元剔除出跟踪池。",
+      "必须等待放量站上 5 日/20 日均线企稳确认；若放量单边砸盘破位，严禁盲目接飞刀加仓！"
+    ],
+    "one_line_summary": "永安行：先看着 —— 等证据落地再决定，现在不下注。不建议占用资金。判断错了就退：跌破强支撑线 14.44 元剔除出跟踪池。",
+    "status": "PENDING",
+    "created_at": 1793450597.9299219,
+    "verified_at": null,
+    "verification_notes": ""
+  },
+  {
+    "thesis_id": "600519.SH_20261030_0627",
+    "ticker": "600519.SH",
+    "name": "贵州茅台",
+    "trade_date": "20261030",
+    "decision_gear": "等证据临界(观察)",
+    "position_cap": 0.0,
+    "tactical_levels": {
+      "target": 0.0
+    },
+    "falsification_lines": [
+      "跌破强支撑线 1235.58 元剔除出跟踪池。",
+      "防范冲高遇阻产生日线顶背离；严格执行 A 股 T+1 纪律，次日若收盘跌破 5 日线启动部分止盈防守。"
+    ],
+    "one_line_summary": "贵州茅台：先看着 —— 等证据落地再决定，现在不下注。不建议占用资金。判断错了就退：跌破强支撑线 1235.58 元剔除出跟踪池。",
+    "status": "PENDING",
+    "created_at": 1793450627.9066668,
+    "verified_at": null,
+    "verification_notes": ""
+  },
+  {
+    "thesis_id": "601398.SH_20261030_0635",
+    "ticker": "601398.SH",
+    "name": "工商银行",
+    "trade_date": "20261030",
+    "decision_gear": "等证据临界(观察)",
+    "position_cap": 0.0,
+    "tactical_levels": {
+      "target": 0.0
+    },
+    "falsification_lines": [
+      "跌破强支撑线 8.00 元剔除出跟踪池。",
+      "若向下放量击穿 20 日生命均线或知情均线 (8.52元)，则洗盘蓄势宣告失败，立即转入防守。"
+    ],
+    "one_line_summary": "工商银行：先看着 —— 等证据落地再决定，现在不下注。不建议占用资金。判断错了就退：跌破强支撑线 8.00 元剔除出跟踪池。",
+    "status": "PENDING",
+    "created_at": 1793450635.3461106,
+    "verified_at": null,
+    "verification_notes": ""
+  },
+  {
+    "thesis_id": "000001.SZ_20261030_0642",
+    "ticker": "000001.SZ",
+    "name": "平安银行",
+    "trade_date": "20261030",
+    "decision_gear": "等证据临界(观察)",
+    "position_cap": 0.0,
+    "tactical_levels": {
+      "target": 0.0
+    },
+    "falsification_lines": [
+      "跌破强支撑线 11.20 元剔除出跟踪池。",
+      "若向下放量击穿 20 日生命均线或知情均线 (11.41元)，则洗盘蓄势宣告失败，立即转入防守。"
+    ],
+    "one_line_summary": "平安银行：先看着 —— 等证据落地再决定，现在不下注。不建议占用资金。判断错了就退：跌破强支撑线 11.20 元剔除出跟踪池。",
+    "status": "PENDING",
+    "created_at": 1793450642.283989,
+    "verified_at": null,
+    "verification_notes": ""
+  },
+  {
+    "thesis_id": "300750.SZ_20261030_0649",
+    "ticker": "300750.SZ",
+    "name": "宁德时代",
+    "trade_date": "20261030",
+    "decision_gear": "观察",
+    "position_cap": 0.0,
+    "tactical_levels": {
+      "target": 0.0
+    },
+    "falsification_lines": [
+      "跌破防守线 220.41 元坚决离场，不参与任何左侧盲目猜底！",
+      "严禁任何主观臆测抄底！在未见机构放量长阳突破 5 日线形成底分型企稳前，盲目入场极易被深套磨损本金。"
+    ],
+    "one_line_summary": "宁德时代：先看着 —— 可以关注，但不急着买。不建议占用资金。判断错了就退：跌破防守线 220.41 元坚决离场，不参与任何左侧盲目猜底！",
+    "status": "PENDING",
+    "created_at": 1793450649.0774982,
+    "verified_at": null,
+    "verification_notes": ""
+  },
+  {
+    "thesis_id": "688981.SH_20261030_0656",
+    "ticker": "688981.SH",
+    "name": "中芯国际",
+    "trade_date": "20261030",
+    "decision_gear": "回避",
+    "position_cap": 0.0,
+    "tactical_levels": {
+      "target": 0.0
+    },
+    "falsification_lines": [
+      "一票否决绝对生效，禁止建仓！",
+      "严禁任何主观臆测抄底！在未见机构放量长阳突破 5 日线形成底分型企稳前，盲目入场极易被深套磨损本金。"
+    ],
+    "one_line_summary": "中芯国际：别碰 —— 存在硬伤，先排除。不建议占用资金。判断错了就退：一票否决绝对生效，禁止建仓！ ⚠️ 另有 1 条致命风险必须先看完。",
+    "status": "PENDING",
+    "created_at": 1793450656.5290372,
+    "verified_at": null,
+    "verification_notes": ""
+  },
+  {
+    "thesis_id": "002273.SZ_20261030_0664",
+    "ticker": "002273.SZ",
+    "name": "水晶光电",
+    "trade_date": "20261030",
+    "decision_gear": "等证据临界(观察)",
+    "position_cap": 0.0,
+    "tactical_levels": {
+      "target": 0.0
+    },
+    "falsification_lines": [
+      "跌破强支撑线 19.40 元剔除出跟踪池。",
+      "吸筹周期耗时漫长且常伴随磨人假摔洗盘，若有效跌破箱体下沿或放量杀跌，需暂停建仓并止损防守。"
+    ],
+    "one_line_summary": "水晶光电：先看着 —— 等证据落地再决定，现在不下注。不建议占用资金。判断错了就退：跌破强支撑线 19.40 元剔除出跟踪池。",
+    "status": "PENDING",
+    "created_at": 1793450664.4517903,
+    "verified_at": null,
+    "verification_notes": ""
+  },
+  {
+    "thesis_id": "920002.BJ_20261030_0670",
+    "ticker": "920002.BJ",
+    "name": "万达轴承",
+    "trade_date": "20261030",
+    "decision_gear": "观察",
+    "position_cap": 0.0,
+    "tactical_levels": {
+      "target": 0.0
+    },
+    "falsification_lines": [
+      "以昨日收盘价 (未核验(前收盘价缺失)) 为日内生命线/防线，开盘破位 3 分钟不回立刻清仓止损，绝不参与转跌后的天地板博傻！",
+      "吸筹周期耗时漫长且常伴随磨人假摔洗盘，若有效跌破箱体下沿或放量杀跌，需暂停建仓并止损防守。"
+    ],
+    "one_line_summary": "万达轴承：先看着 —— 可以关注，但不急着买。不建议占用资金。判断错了就退：以昨日收盘价 (未核验(前收盘价缺失)) 为日内生命线/防线，开盘破位 3 分钟不回立刻清仓止损，绝不参与转跌后的天地板博傻！",
+    "status": "PENDING",
+    "created_at": 1793450670.1419888,
+    "verified_at": null,
+    "verification_notes": ""
+  },
+  {
+    "thesis_id": "605336.SH_20261030_0677",
+    "ticker": "605336.SH",
+    "name": "*ST帅电",
+    "trade_date": "20261030",
+    "decision_gear": "观察",
+    "position_cap": 0.0,
+    "tactical_levels": {
+      "target": 0.0
+    },
+    "falsification_lines": [
+      "以昨日收盘价 (未核验(前收盘价缺失)) 为日内生命线/防线，开盘破位 3 分钟不回立刻清仓止损，绝不参与转跌后的天地板博傻！",
+      "严禁任何主观臆测抄底！在未见机构放量长阳突破 5 日线形成底分型企稳前，盲目入场极易被深套磨损本金。"
+    ],
+    "one_line_summary": "*ST帅电：先看着 —— 可以关注，但不急着买。不建议占用资金。判断错了就退：以昨日收盘价 (未核验(前收盘价缺失)) 为日内生命线/防线，开盘破位 3 分钟不回立刻清仓止损，绝不参与转跌后的天地板博傻！",
+    "status": "PENDING",
+    "created_at": 1793450677.5456774,
+    "verified_at": null,
+    "verification_notes": ""
+  },
+  {
+    "thesis_id": "603959.SH_20261030_0685",
+    "ticker": "603959.SH",
+    "name": "ST百利",
+    "trade_date": "20261030",
+    "decision_gear": "回避",
+    "position_cap": 0.0,
+    "tactical_levels": {
+      "target": 0.0
+    },
+    "falsification_lines": [
+      "一票否决绝对生效，禁止建仓！",
+      "严禁任何主观臆测抄底！在未见机构放量长阳突破 5 日线形成底分型企稳前，盲目入场极易被深套磨损本金。"
+    ],
+    "one_line_summary": "ST百利：别碰 —— 存在硬伤，先排除。不建议占用资金。判断错了就退：一票否决绝对生效，禁止建仓！ ⚠️ 另有 1 条致命风险必须先看完。",
+    "status": "PENDING",
+    "created_at": 1793450685.9516563,
+    "verified_at": null,
+    "verification_notes": ""
+  },
+  {
+    "thesis_id": "601718.SH_20261030_0693",
+    "ticker": "601718.SH",
+    "name": "ST际华",
+    "trade_date": "20261030",
+    "decision_gear": "回避",
+    "position_cap": 0.0,
+    "tactical_levels": {
+      "target": 0.0
+    },
+    "falsification_lines": [
+      "一票否决绝对生效，禁止建仓！",
+      "严禁任何主观臆测抄底！在未见机构放量长阳突破 5 日线形成底分型企稳前，盲目入场极易被深套磨损本金。"
+    ],
+    "one_line_summary": "ST际华：别碰 —— 存在硬伤，先排除。不建议占用资金。判断错了就退：一票否决绝对生效，禁止建仓！ ⚠️ 另有 1 条致命风险必须先看完。",
+    "status": "PENDING",
+    "created_at": 1793450693.556534,
+    "verified_at": null,
+    "verification_notes": ""
+  }
+]

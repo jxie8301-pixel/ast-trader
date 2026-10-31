@@ -3,12 +3,14 @@ Strictly aligned with Ashare-researchreport/scripts/financial_audit.py.
 """
 from __future__ import annotations
 
+import logging
 import math
 from typing import Any
 
 import pandas as pd
 
 import config
+from .industry import classify_industry, is_financial
 from .red_flags import (
     LEVEL_FATAL,
     LEVEL_HIGH,
@@ -18,6 +20,8 @@ from .red_flags import (
     RedFlagItem,
     make_flag_id,
 )
+
+logger = logging.getLogger("ast_trader.core.audit_engine")
 
 
 def _safe_float(v: Any, default: float | None = None) -> float | None:
@@ -30,8 +34,57 @@ def _safe_float(v: Any, default: float | None = None) -> float | None:
         return default
 
 
+def _first_present(d: Any, keys: tuple[str, ...]) -> float | None:
+    """按顺序取第一个非空且合法的浮点数字段值。"""
+    if d is None:
+        return None
+    for k in keys:
+        if isinstance(d, dict):
+            val = d.get(k)
+        elif hasattr(d, "get"):
+            val = d.get(k)
+        elif hasattr(d, "__getitem__"):
+            try:
+                val = d[k]
+            except (KeyError, IndexError):
+                val = None
+        else:
+            val = None
+        sf = _safe_float(val)
+        if sf is not None:
+            return sf
+    return None
+
+
+def _model_applicable(model: str, industry: str | None) -> bool:
+    """根据标的行业判定该审计模型是否适用。金融业等非制造业经验模型主动弃权。"""
+    if not industry:
+        return True
+    lookup_key = "AltmanZ" if model in ("Altman", "AltmanZ") else model
+    blocked = config.AUDIT_MODEL_INDUSTRY_BLOCKLIST.get(lookup_key, ())
+    if industry in blocked:
+        return False
+    if "金融" in blocked and is_financial(industry):
+        return False
+    return True
+
+
+def _abstention_flag(model: str, industry: str, model_cn: str, reason: str) -> RedFlagItem:
+    return RedFlagItem(
+        id=make_flag_id("Governance", f"{model.lower()}_industry_abstention"),
+        framework="Governance",
+        level=LEVEL_INFO,
+        title=f"{model_cn} 模型不适用 ({industry}业) · 主动弃权",
+        value=None,
+        threshold="模型校验域准入适用性检查",
+        evidence=reason,
+        node="path",
+        metric_refs=[model],
+    )
+
+
 def _annual(df: pd.DataFrame) -> pd.DataFrame:
-    """过滤年报行 (以 1231 结尾的报告期)，按年份升序排序 (完全对齐 Ashare financial_audit.py:90)"""
+    """年报切片 (仅取 1231 结尾的表) (对齐 Ashare financial_audit.py:90)"""
     if df is None or df.empty:
         return pd.DataFrame()
     if "end_date" not in df.columns:
@@ -46,7 +99,7 @@ def _annual(df: pd.DataFrame) -> pd.DataFrame:
 
 
 class AuditEngine:
-    """11 大财务审计与扫雷引擎。输入三张报表与行情快照，输出标准红旗清单。"""
+    """11 大经典财务与法务会计审计引擎."""
 
     def __init__(self) -> None:
         pass
@@ -58,34 +111,43 @@ class AuditEngine:
         income_df: pd.DataFrame,
         governance_info: dict[str, Any] | None = None,
         quote_info: dict[str, Any] | None = None,
+        ai: dict[str, Any] | None = None,
     ) -> list[RedFlagItem]:
-        """运行全部 11 个经典审计框架，输出标准红旗清单。"""
+        """对齐 11 大核心框架与本土法务排雷."""
         flags: list[RedFlagItem] = []
 
         ann_bs = _annual(balance_df)
         ann_inc = _annual(income_df)
         ann_cf = _annual(cashflow_df)
 
+        gov = governance_info or {}
+        industry = classify_industry(
+            industry=gov.get("industry"),
+            name=(quote_info or {}).get("name"),
+            concepts=gov.get("concepts"),
+            main_business=gov.get("main_business"),
+        )
+
         # 1. Piotroski F-Score (9 签号)
-        flags.extend(self._check_piotroski(ann_bs, ann_inc, ann_cf))
+        flags.extend(self._check_piotroski(ann_bs, ann_inc, ann_cf, industry=industry))
 
         # 2. Beneish M-Score (8 变量)
-        flags.extend(self._check_beneish(ann_bs, ann_inc, ann_cf))
+        flags.extend(self._check_beneish(ann_bs, ann_inc, ann_cf, industry=industry))
 
         # 3. Altman Z-Score (5 变量破产预警)
-        flags.extend(self._check_altman(ann_bs, ann_inc, quote_info))
+        flags.extend(self._check_altman(ann_bs, ann_inc, quote_info, industry=industry))
 
-        # 4. DuPont 3/5 分解与 ROE 急剧恶化
-        flags.extend(self._check_dupont(ann_bs, ann_inc))
+        # 4. DuPont 3/5 分解与 ROE 恶化
+        flags.extend(self._check_dupont(ann_bs, ann_inc, industry=industry))
 
         # 5. Buffett Quality Checks (剪刀差、现金覆盖与非经占比)
-        flags.extend(self._check_buffett_quality(ann_bs, ann_inc, ann_cf))
+        flags.extend(self._check_buffett_quality(ann_bs, ann_inc, ann_cf, industry=industry))
 
-        # 6. 主营业务侵蚀 (投资收益占营业利润过高 - 涵盖最新期)
-        flags.extend(self._check_invest_income_erosion(income_df))
+        # 6. 主营业务侵蚀 (投资收益占营业利润过高)
+        flags.extend(self._check_invest_income_erosion(income_df, industry=industry))
 
         # 7. Sloan Accrual Anomaly (高应计异象)
-        flags.extend(self._check_sloan(ann_bs, ann_inc, ann_cf))
+        flags.extend(self._check_sloan(ann_bs, ann_inc, ann_cf, industry=industry))
 
         # 8. Governance Red Flags (高比例质押、股东减持)
         if governance_info:
@@ -95,24 +157,57 @@ class AuditEngine:
         if governance_info:
             flags.extend(self._check_shareholder_flow(governance_info))
 
-        # 10. Forward Guidance Anomaly (业绩预告异常与首亏/预亏, 对齐 Ashare Framework 9)
+        # 10. Forward Guidance Anomaly (业绩预告异常与首亏/预亏)
         if governance_info:
             flags.extend(self._check_forecast_anomaly(governance_info))
 
-        # 11. Valuation Anomaly (估值透支、PB vs ROE 错配、小盘双杀)
+        # 11. Valuation Anomaly (估值透支、PB vs ROE 错配)
         if quote_info:
             flags.extend(self._check_valuation(ann_bs, ann_inc, quote_info))
 
         # 12. Related-Party & Subsidiary Exposure (长期股权投资与关联方敞口)
         flags.extend(self._check_related_party_exposure(ann_bs, ann_inc))
 
-        return flags
+        # 13. A-Share Forensic: 存贷双高与利息/债务倒挂排雷
+        target_bs = ann_bs if (ann_bs is not None and not ann_bs.empty) else balance_df
+        target_inc = ann_inc if (ann_inc is not None and not ann_inc.empty) else income_df
+        flags.extend(self._check_high_cash_high_debt(target_bs, target_inc, industry=industry))
+
+        # 14. A-Share Forensic: 在建工程长期不转固与异常膨胀排雷
+        flags.extend(self._check_cip_anomaly(target_bs, target_inc, industry=industry))
+
+        # AI 治理与监管文本穿透增强
+        if ai:
+            try:
+                from core.ai_coprocessor.guard import nominations_to_flags
+                flags.extend(nominations_to_flags(ai))
+            except Exception as exc:
+                logger.warning("AI 治理提名并入失败: %s", exc)
+
+        # 框架与排雷红旗严格去重 (按 framework, title, node 唯一性收敛)
+        deduped_flags: list[RedFlagItem] = []
+        seen_keys: set[tuple[str, str, str]] = set()
+        for f in flags:
+            key = (str(f.framework).strip(), str(f.title).strip(), str(f.node).strip())
+            if key not in seen_keys:
+                seen_keys.add(key)
+                deduped_flags.append(f)
+
+        return deduped_flags
 
     # ─────────────────────────────────────────────────────────────
-    # Framework 1: Piotroski F-Score (9 签号打分, 对齐 Ashare financial_audit.py:114)
+    # Framework 1: Piotroski F-Score (9 签号打分)
     # ─────────────────────────────────────────────────────────────
-    def _check_piotroski(self, bs: pd.DataFrame, inc: pd.DataFrame, cf: pd.DataFrame) -> list[RedFlagItem]:
+    def _check_piotroski(
+        self, bs: pd.DataFrame, inc: pd.DataFrame, cf: pd.DataFrame,
+        industry: str | None = None,
+    ) -> list[RedFlagItem]:
         flags = []
+        if not _model_applicable("Piotroski", industry):
+            return [_abstention_flag(
+                "Piotroski", industry or "金融", "Piotroski F-Score",
+                f"标的归属于{industry or '金融'}业，F-Score在金融业不具备判别力，主动弃权。"
+            )]
         if len(inc) < 2 or len(bs) < 2 or len(cf) < 2:
             return flags
 
@@ -120,17 +215,23 @@ class AuditEngine:
         bs_now, bs_prev = bs.iloc[-1], bs.iloc[-2]
         cf_now, cf_prev = cf.iloc[-1], cf.iloc[-2]
 
+        ni = _first_present(y_now, ("n_income_attr_p", "n_income"))
+        ni_prev = _first_present(y_prev, ("n_income_attr_p", "n_income"))
+        ocf = _safe_float(cf_now.get("n_cashflow_act"))
+        if ni is None or ocf is None or ni_prev is None:
+            return flags
+
         score = 0
         details: list[str] = []
 
         # 1. NI > 0
-        ni = _safe_float(y_now.get("n_income_attr_p")) or _safe_float(y_now.get("n_income")) or 0.0
         ok_ni = ni > 0
         score += int(ok_ni)
         details.append(f"NI>0={'✓' if ok_ni else '✗'}")
 
-        # 2. ROA > 0 (资产缺失严禁假定 ta=1.0)
+        # 2. ROA > 0
         ta_now = _safe_float(bs_now.get("total_assets"))
+        ta_prev = _safe_float(bs_prev.get("total_assets"))
         if ta_now and ta_now > 0:
             roa = ni / ta_now
             ok_roa = roa > 0
@@ -141,19 +242,16 @@ class AuditEngine:
         details.append(f"ROA>0={'✓' if ok_roa else '✗'}")
 
         # 3. OCF > 0
-        ocf = _safe_float(cf_now.get("n_cashflow_act")) or 0.0
         ok_ocf = ocf > 0
         score += int(ok_ocf)
         details.append(f"OCF>0={'✓' if ok_ocf else '✗'}")
 
-        # 4. OCF > NI (利润现金质量)
+        # 4. OCF > NI
         ok_cfo_ni = ocf > ni
         score += int(ok_cfo_ni)
         details.append(f"OCF>NI={'✓' if ok_cfo_ni else '✗'}")
 
         # 5. ROA 同比上升
-        ni_prev = _safe_float(y_prev.get("n_income_attr_p")) or _safe_float(y_prev.get("n_income")) or 0.0
-        ta_prev = _safe_float(bs_prev.get("total_assets"))
         if roa is not None and ta_prev and ta_prev > 0:
             roa_prev = ni_prev / ta_prev
             ok_roa_up = roa > roa_prev
@@ -188,7 +286,7 @@ class AuditEngine:
         score += int(ok_cr_up)
         details.append(f"流动比率↑={'✓' if ok_cr_up else '✗'}")
 
-        # 8. 毛利率同比上升 (营收缺失严禁假定 rev=1.0)
+        # 8. 毛利率同比上升
         rev_now = _safe_float(y_now.get("revenue"))
         rev_prev = _safe_float(y_prev.get("revenue"))
         cos_now = _safe_float(y_now.get("oper_cost"))
@@ -214,25 +312,25 @@ class AuditEngine:
 
         if score <= 3:
             flags.append(RedFlagItem(
-                id=make_flag_id("Piotroski", "f_score_poor"),
+                id=make_flag_id("Piotroski", "f_score_weak"),
                 framework="Piotroski F-Score",
                 level=LEVEL_HIGH,
-                title="基本面健康度严重恶化 (Piotroski F-Score 极低)",
+                title="基本面健康度堪忧 (Piotroski F-Score 极低)",
                 value=score,
-                threshold="F <= 3 警示",
-                evidence=f"F-Score={score}/9 分 ({' | '.join(details)})",
+                threshold="F <= 3",
+                evidence=f"F-Score={score}/9 ({', '.join(details)})",
                 node="quality",
                 metric_refs=["f_score"],
             ))
-        elif score >= 7:
+        elif score >= 8:
             flags.append(RedFlagItem(
                 id=make_flag_id("Piotroski", "f_score_strong"),
                 framework="Piotroski F-Score",
                 level=LEVEL_LOW,
-                title="综合财务状况优良 (Piotroski F-Score 强健)",
+                title="基本面健康度优异 (Piotroski F-Score 强健)",
                 value=score,
-                threshold="F >= 7 优秀",
-                evidence=f"F-Score={score}/9 分 ({' | '.join(details)})",
+                threshold="F >= 8",
+                evidence=f"F-Score={score}/9 ({', '.join(details)})",
                 node="quality",
                 metric_refs=["f_score"],
             ))
@@ -240,54 +338,68 @@ class AuditEngine:
         return flags
 
     # ─────────────────────────────────────────────────────────────
-    # Framework 2: Beneish M-Score (8 变量模型, 对齐 Ashare financial_audit.py:222)
+    # Framework 2: Beneish M-Score (8 变量财务操纵检验)
     # ─────────────────────────────────────────────────────────────
-    def _check_beneish(self, bs: pd.DataFrame, inc: pd.DataFrame, cf: pd.DataFrame) -> list[RedFlagItem]:
+    def _check_beneish(
+        self, bs: pd.DataFrame, inc: pd.DataFrame, cf: pd.DataFrame,
+        industry: str | None = None,
+    ) -> list[RedFlagItem]:
         flags = []
-        if len(inc) < 2 or len(bs) < 2:
+        if not _model_applicable("Beneish", industry):
+            return [_abstention_flag(
+                "Beneish", industry or "金融", "Beneish M-Score",
+                f"标的归属于{industry or '金融'}业，Beneish财务操纵模型不适用，主动弃权。"
+            )]
+        if len(inc) < 2 or len(bs) < 2 or len(cf) < 2:
             return flags
 
         y_now, y_prev = inc.iloc[-1], inc.iloc[-2]
         b_now, b_prev = bs.iloc[-1], bs.iloc[-2]
+        c_now = cf.iloc[-1]
 
-        rev_t = _safe_float(y_now.get("revenue"))
-        rev_t1 = _safe_float(y_prev.get("revenue"))
-        rec_t = _safe_float(b_now.get("accounts_receiv"))
-        rec_t1 = _safe_float(b_prev.get("accounts_receiv"))
-        cogs_t = _safe_float(y_now.get("oper_cost"))
-        cogs_t1 = _safe_float(y_prev.get("oper_cost"))
-        ta_t = _safe_float(b_now.get("total_assets"))
-        ta_t1 = _safe_float(b_prev.get("total_assets"))
+        rev_now = _safe_float(y_now.get("revenue"))
+        rev_prev = _safe_float(y_prev.get("revenue"))
+        rec_now = _safe_float(b_now.get("accounts_receiv")) or 0.0
+        rec_prev = _safe_float(b_prev.get("accounts_receiv")) or 0.0
 
-        if not all([rev_t, rev_t1, ta_t, ta_t1]) or rev_t <= 0 or rev_t1 <= 0 or ta_t <= 0 or ta_t1 <= 0:
+        if not rev_now or not rev_prev or rev_now <= 0 or rev_prev <= 0:
             return flags
 
-        # 1. DSRI
-        dsri = ((rec_t or 0) / rev_t) / max(((rec_t1 or 0) / rev_t1), 1e-4)
-        # 2. GMI
-        gm_t = (rev_t - (cogs_t or 0)) / rev_t
-        gm_t1 = (rev_t1 - (cogs_t1 or 0)) / rev_t1
-        gmi = max(gm_t1, 1e-4) / max(gm_t, 1e-4)
-        # 3. AQI
-        ca_t = _safe_float(b_now.get("total_cur_assets"), 0)
-        ca_t1 = _safe_float(b_prev.get("total_cur_assets"), 0)
-        ppe_t = _safe_float(b_now.get("fix_assets"), 0)
-        ppe_t1 = _safe_float(b_prev.get("fix_assets"), 0)
-        aqi = (1 - (ca_t + ppe_t) / ta_t) / max((1 - (ca_t1 + ppe_t1) / ta_t1), 1e-4)
-        # 4. SGI
-        sgi = rev_t / rev_t1
-        # 5. DEPI
-        depi = 1.0
-        # 6. SGAI
-        sgai = 1.0
-        # 7. LVGI
-        debt_t = (_safe_float(b_now.get("total_liab")) or 0) / ta_t
-        debt_t1 = (_safe_float(b_prev.get("total_liab")) or 0) / ta_t1
-        lvgi = debt_t / max(debt_t1, 1e-4)
-        # 8. TATA
-        ni_t = _safe_float(y_now.get("n_income")) or 0
-        cfo_t = (_safe_float(cf.iloc[-1].get("n_cashflow_act")) or 0) if len(cf) > 0 else 0
-        tata = (ni_t - cfo_t) / ta_t
+        dsri = (rec_now / rev_now) / (rec_prev / rev_prev) if rec_prev > 0 else 1.0
+
+        cos_now = _safe_float(y_now.get("oper_cost")) or 0.0
+        cos_prev = _safe_float(y_prev.get("oper_cost")) or 0.0
+        gm_now = (rev_now - cos_now) / rev_now
+        gm_prev = (rev_prev - cos_prev) / rev_prev
+        gmi = gm_prev / gm_now if gm_now > 0 else 1.0
+
+        ta_now = _safe_float(b_now.get("total_assets")) or 1.0
+        ta_prev = _safe_float(b_prev.get("total_assets")) or 1.0
+        ca_now = _safe_float(b_now.get("total_cur_assets")) or 0.0
+        ca_prev = _safe_float(b_prev.get("total_cur_assets")) or 0.0
+        fa_now = _safe_float(b_now.get("fix_assets")) or 0.0
+        fa_prev = _safe_float(b_prev.get("fix_assets")) or 0.0
+
+        aqi_now = 1.0 - (ca_now + fa_now) / ta_now if ta_now > 0 else 0.0
+        aqi_prev = 1.0 - (ca_prev + fa_prev) / ta_prev if ta_prev > 0 else 0.0
+        aqi = aqi_now / aqi_prev if aqi_prev > 0 else 1.0
+
+        sgi = rev_now / rev_prev
+        depmi = 1.0
+
+        sga_now = (_safe_float(y_now.get("sell_exp")) or 0.0) + (_safe_float(y_now.get("admin_exp")) or 0.0)
+        sga_prev = (_safe_float(y_prev.get("sell_exp")) or 0.0) + (_safe_float(y_prev.get("admin_exp")) or 0.0)
+        sgai = (sga_now / rev_now) / (sga_prev / rev_prev) if (sga_prev > 0 and rev_prev > 0) else 1.0
+
+        ni = _first_present(y_now, ("n_income_attr_p", "n_income")) or 0.0
+        cfo = _safe_float(c_now.get("n_cashflow_act")) or 0.0
+        tata = (ni - cfo) / ta_now if ta_now > 0 else 0.0
+
+        ltd_now = _safe_float(b_now.get("lt_borr")) or 0.0
+        cl_now = _safe_float(b_now.get("total_cur_liab")) or 0.0
+        ltd_prev = _safe_float(b_prev.get("lt_borr")) or 0.0
+        cl_prev = _safe_float(b_prev.get("total_cur_liab")) or 0.0
+        levi = ((ltd_now + cl_now) / ta_now) / ((ltd_prev + cl_prev) / ta_prev) if (ta_now > 0 and ta_prev > 0 and (ltd_prev + cl_prev) > 0) else 1.0
 
         m_score = (
             -4.84
@@ -295,67 +407,74 @@ class AuditEngine:
             + 0.528 * gmi
             + 0.404 * aqi
             + 0.892 * sgi
-            + 0.115 * depi
+            + 0.115 * depmi
             - 0.172 * sgai
-            + 4.679 * tata
-            - 0.327 * lvgi
+            + 4.037 * tata
+            + 0.0327 * levi
         )
 
-        if m_score > config.BENEISH_M_FATAL_SCORE:
+        fatal_th = getattr(config, "BENEISH_M_SCORE_FATAL_THRESHOLD", -1.78)
+        if m_score > fatal_th:
             flags.append(RedFlagItem(
                 id=make_flag_id("Beneish", "m_score_fraud_risk"),
                 framework="Beneish M-Score",
                 level=LEVEL_FATAL,
-                title="财务操纵高风险 (Beneish M-Score 超标)",
+                title="财务操纵高风险 (Beneish M-Score 异常)",
                 value=round(m_score, 3),
-                threshold=f"> {config.BENEISH_M_FATAL_SCORE}",
-                evidence=f"M-Score={m_score:.3f} (DSRI应收异动={dsri:.2f}, SGI营收增长={sgi:.2f}, TATA应计率={tata:.2f})",
+                threshold=f"M > {fatal_th} 操纵嫌疑",
+                evidence=f"M-Score={m_score:.3f} 超过阈值 {fatal_th} (DSRI={dsri:.2f}, GMI={gmi:.2f}, SGI={sgi:.2f}, TATA={tata:.3f})",
                 node="quality",
                 metric_refs=["m_score"],
             ))
-        elif dsri > 2.0:
+        elif m_score > -2.22:
             flags.append(RedFlagItem(
-                id=make_flag_id("Beneish", "dsri_high"),
+                id=make_flag_id("Beneish", "m_score_warn"),
                 framework="Beneish M-Score",
                 level=LEVEL_HIGH,
-                title="应收账款增速远超营收 (存赊销激进确认风险)",
-                value=round(dsri, 2),
-                threshold="> 2.0",
-                evidence=f"应收账款异动指数 DSRI={dsri:.2f}",
+                title="财务数据异象预警 (Beneish M-Score 处于灰色地带)",
+                value=round(m_score, 3),
+                threshold=f"-2.22 < M <= {fatal_th}",
+                evidence=f"M-Score={m_score:.3f} 处于财务操纵临界灰区",
                 node="quality",
-                metric_refs=["receivables"],
+                metric_refs=["m_score"],
             ))
 
         return flags
 
     # ─────────────────────────────────────────────────────────────
-    # Framework 3: Altman Z-Score (破产预警, 对齐 Ashare financial_audit.py:335)
+    # Framework 3: Altman Z-Score (破产风险预警)
     # ─────────────────────────────────────────────────────────────
-    def _check_altman(self, bs: pd.DataFrame, inc: pd.DataFrame, quote_info: dict[str, Any] | None = None) -> list[RedFlagItem]:
+    def _check_altman(
+        self, bs: pd.DataFrame, inc: pd.DataFrame, quote_info: dict[str, Any] | None = None,
+        industry: str | None = None,
+    ) -> list[RedFlagItem]:
         flags = []
+        if not _model_applicable("Altman", industry):
+            return [_abstention_flag(
+                "Altman", industry or "金融", "Altman Z-Score",
+                f"标的归属于{industry or '金融'}业，Altman破产预警模型不适用金融业，主动弃权。"
+            )]
         if bs.empty or inc.empty:
             return flags
 
-        b = bs.iloc[-1]
-        i = inc.iloc[-1]
-        ta = _safe_float(b.get("total_assets"))
-        tl = _safe_float(b.get("total_liab"))
+        b_now = bs.iloc[-1]
+        y_now = inc.iloc[-1]
+
+        ta = _safe_float(b_now.get("total_assets"))
+        tl = _safe_float(b_now.get("total_liab"))
+        tca = _safe_float(b_now.get("total_cur_assets")) or 0.0
+        tcl = _safe_float(b_now.get("total_cur_liab")) or 0.0
+        re = _safe_float(b_now.get("undistr_profit")) or 0.0
+        ebit = _safe_float(y_now.get("operate_profit")) or 0.0
+        rev = _safe_float(y_now.get("revenue")) or 0.0
+
         if not ta or ta <= 0 or not tl or tl <= 0:
             return flags
 
-        tca = _safe_float(b.get("total_cur_assets"), 0)
-        tcl = _safe_float(b.get("total_cur_liab"), 0)
-        re = _safe_float(b.get("undistr_profit"), 0)
-        ebit = _safe_float(i.get("operate_profit"), 0)
-        rev = _safe_float(i.get("revenue"), 0)
-
-        mv = 0.0
-        if quote_info:
-            price = _safe_float(quote_info.get("close"), 0.0)
-            shares = _safe_float(b.get("total_share"), 0.0)
-            mv = (price * shares) if price and shares else (_safe_float(b.get("total_equity"), 0.0) or 1.0)
-        else:
-            mv = _safe_float(b.get("total_equity"), 0.0) or 1.0
+        te = _first_present(b_now, ("total_hldr_eqy_inc_min_int", "total_hldr_eqy_exc_min_int", "total_equity"))
+        mv = float((quote_info or {}).get("total_mv") or 0.0)
+        if mv <= 0:
+            mv = te if te is not None else 1.0
 
         z = (
             1.2 * (tca - tcl) / ta
@@ -393,25 +512,36 @@ class AuditEngine:
         return flags
 
     # ─────────────────────────────────────────────────────────────
-    # Framework 4: DuPont 3/5 分解 (对齐 Ashare financial_audit.py:381)
+    # Framework 4: DuPont 3/5 分解
     # ─────────────────────────────────────────────────────────────
-    def _check_dupont(self, bs: pd.DataFrame, inc: pd.DataFrame) -> list[RedFlagItem]:
+    def _check_dupont(
+        self, bs: pd.DataFrame, inc: pd.DataFrame,
+        industry: str | None = None,
+    ) -> list[RedFlagItem]:
         flags = []
+        if not _model_applicable("DuPont", industry):
+            return [_abstention_flag(
+                "DuPont", industry or "金融", "DuPont 分解",
+                f"标的归属于{industry or '金融'}业，DuPont 分解不具备质量判别力，主动弃权。"
+            )]
         if len(inc) < 2 or len(bs) < 2:
             return flags
 
         y_now, y_prev = inc.iloc[-1], inc.iloc[-2]
         b_now, b_prev = bs.iloc[-1], bs.iloc[-2]
 
-        rev_now = _safe_float(y_now.get("revenue")) or 0.0
-        ni_now = _safe_float(y_now.get("n_income_attr_p")) or _safe_float(y_now.get("n_income")) or 0.0
-        ta_now = _safe_float(b_now.get("total_assets")) or 0.0
-        te_now = _safe_float(b_now.get("total_hldr_eqy_exc_min_int")) or _safe_float(b_now.get("total_equity")) or 0.0
+        rev_now = _safe_float(y_now.get("revenue"))
+        ni_now = _first_present(y_now, ("n_income_attr_p", "n_income"))
+        ta_now = _safe_float(b_now.get("total_assets"))
+        te_now = _first_present(b_now, ("total_hldr_eqy_exc_min_int", "total_equity"))
 
-        rev_prev = _safe_float(y_prev.get("revenue")) or 0.0
-        ni_prev = _safe_float(y_prev.get("n_income_attr_p")) or _safe_float(y_prev.get("n_income")) or 0.0
-        ta_prev = _safe_float(b_prev.get("total_assets")) or 0.0
-        te_prev = _safe_float(b_prev.get("total_hldr_eqy_exc_min_int")) or _safe_float(b_prev.get("total_equity")) or 0.0
+        rev_prev = _safe_float(y_prev.get("revenue"))
+        ni_prev = _first_present(y_prev, ("n_income_attr_p", "n_income"))
+        ta_prev = _safe_float(b_prev.get("total_assets"))
+        te_prev = _first_present(b_prev, ("total_hldr_eqy_exc_min_int", "total_equity"))
+
+        if None in (rev_now, ni_now, ta_now, te_now, rev_prev, ni_prev, ta_prev, te_prev):
+            return flags
 
         if rev_now > 0 and ta_now > 0 and te_now > 0 and rev_prev > 0 and ta_prev > 0 and te_prev > 0:
             nm_now = ni_now / rev_now
@@ -428,11 +558,11 @@ class AuditEngine:
                 flags.append(RedFlagItem(
                     id=make_flag_id("DuPont", "roe_severe_deterioration"),
                     framework="DuPont",
-                    level=LEVEL_FATAL,
-                    title="盈利能力系统性崩塌 (DuPont ROE 同比暴跌 > 10pp)",
+                    level=LEVEL_HIGH,
+                    title="盈利能力阶段性承压 (DuPont ROE 同比大幅下滑 > 10pp)",
                     value=round((roe_prev - roe_now) * 100, 1),
-                    threshold="降幅 > 10pp",
-                    evidence=f"ROE由 {roe_prev*100:.1f}% 崩塌至 {roe_now*100:.1f}% (净利率由 {nm_prev*100:.1f}% 降至 {nm_now*100:.1f}%)",
+                    threshold="降幅 > 10pp 警示",
+                    evidence=f"ROE由 {roe_prev*100:.1f}% 下滑至 {roe_now*100:.1f}% (净利率由 {nm_prev*100:.1f}% 降至 {nm_now*100:.1f}%)",
                     node="quality",
                     metric_refs=["roe"],
                 ))
@@ -452,19 +582,25 @@ class AuditEngine:
         return flags
 
     # ─────────────────────────────────────────────────────────────
-    # Framework 5: Buffett Quality Checks (对齐 Ashare financial_audit.py:422)
+    # Framework 5: Buffett Quality Checks
     # ─────────────────────────────────────────────────────────────
-    def _check_buffett_quality(self, bs: pd.DataFrame, inc: pd.DataFrame, cf: pd.DataFrame) -> list[RedFlagItem]:
+    def _check_buffett_quality(
+        self, bs: pd.DataFrame, inc: pd.DataFrame, cf: pd.DataFrame,
+        industry: str | None = None,
+    ) -> list[RedFlagItem]:
         flags = []
+        if not _model_applicable("Buffett", industry):
+            return [_abstention_flag(
+                "Buffett", industry or "金融", "Buffett 质量检查",
+                f"标的归属于{industry or '金融'}业，质量检查项无对应经济含义，主动弃权。"
+            )]
         if bs.empty:
             return flags
 
         b_now = bs.iloc[-1]
-
-        # 1. 商誉/净资产 (仅需资产负债表即可检验)
-        goodwill = _safe_float(b_now.get("goodwill")) or 0.0
-        te = _safe_float(b_now.get("total_hldr_eqy_exc_min_int")) or _safe_float(b_now.get("total_equity")) or 0.0
-        if te and (goodwill / te) > 0.30:
+        goodwill = _safe_float(b_now.get("goodwill"))
+        te = _first_present(b_now, ("total_hldr_eqy_exc_min_int", "total_equity"))
+        if goodwill is not None and te is not None and te > 0 and (goodwill / te) > 0.30:
             gw_ratio = goodwill / te
             flags.append(RedFlagItem(
                 id=make_flag_id("Buffett", "goodwill_overhang"),
@@ -482,271 +618,253 @@ class AuditEngine:
             return flags
 
         y_now = inc.iloc[-1]
-        ni = _safe_float(y_now.get("n_income_attr_p")) or _safe_float(y_now.get("n_income")) or 0.0
+        rev = _safe_float(y_now.get("revenue")) or 0.0
+        op = _safe_float(y_now.get("operate_profit")) or 0.0
+        ni = _first_present(y_now, ("n_income_attr_p", "n_income")) or 0.0
 
-        # 2. OCF/NI
         if not cf.empty:
-            c_now = cf.iloc[-1]
-            ocf = _safe_float(c_now.get("n_cashflow_act")) or 0.0
-            if ni and abs(ni) > 1e5:
-                ratio = ocf / ni
-                if ratio < 0.8:
-                    flags.append(RedFlagItem(
-                        id=make_flag_id("Buffett", "cfo_ni_ratio_weak"),
-                        framework="Buffett Quality",
-                        level=LEVEL_HIGH if ratio < 0.5 else LEVEL_MEDIUM,
-                        title="利润质量偏弱 (经营现金流/净利润低于及格线)",
-                        value=round(ratio, 3),
-                        threshold="OCF/NI < 0.8 警示，< 0.5 严重",
-                        evidence=f"OCF={ocf/1e8:.2f}亿 / NI={ni/1e8:.2f}亿 (现金覆盖率={ratio*100:.1f}%)",
-                        node="quality",
-                        metric_refs=["ocf_ni"],
-                    ))
+            cfo = _safe_float(cf.iloc[-1].get("n_cashflow_act")) or 0.0
+            if ni > 0 and cfo < 0:
+                flags.append(RedFlagItem(
+                    id=make_flag_id("Buffett", "negative_cfo_with_positive_ni"),
+                    framework="Buffett Quality",
+                    level=LEVEL_HIGH,
+                    title="有利润无现金流 (盈利与经营活动现金流背离)",
+                    value=round(cfo / 1e8, 2),
+                    threshold="净利润 > 0 但 经营现金流 < 0",
+                    evidence=f"净利润={ni/1e8:.2f} 亿，经营现金流={cfo/1e8:.2f} 亿",
+                    node="quality",
+                    metric_refs=["cfo_ni_ratio"],
+                ))
 
-        # 3. 剪刀差检测 (需要至少 2 期)
         if len(inc) >= 2 and len(bs) >= 2:
             y_prev = inc.iloc[-2]
             b_prev = bs.iloc[-2]
-
-            rev_now = _safe_float(y_now.get("revenue")) or 0.0
             rev_prev = _safe_float(y_prev.get("revenue")) or 0.0
             rec_now = _safe_float(b_now.get("accounts_receiv")) or 0.0
             rec_prev = _safe_float(b_prev.get("accounts_receiv")) or 0.0
+            if rev > 0 and rev_prev > 0 and rec_prev > 0:
+                rev_g = (rev - rev_prev) / rev_prev
+                rec_g = (rec_now - rec_prev) / rec_prev
+                if rec_g - rev_g > 0.30 and rec_g > 0.20:
+                    flags.append(RedFlagItem(
+                        id=make_flag_id("Buffett", "receivable_revenue_scissors_gap"),
+                        framework="Buffett Quality",
+                        level=LEVEL_HIGH,
+                        title="应收账款恶性剪刀差 (应收账款增速远超营收增速)",
+                        value=round((rec_g - rev_g) * 100, 1),
+                        threshold="应收增速 - 营收增速 > 30pp",
+                        evidence=f"应收增速={rec_g*100:.1f}%, 营收增速={rev_g*100:.1f}%, 剪刀差达 {(rec_g-rev_g)*100:.1f}pp",
+                        node="quality",
+                        metric_refs=["scissors_gap"],
+                    ))
+
             inv_now = _safe_float(b_now.get("inventories")) or 0.0
             inv_prev = _safe_float(b_prev.get("inventories")) or 0.0
+            if rev > 0 and rev_prev > 0 and inv_prev > 0:
+                rev_g = (rev - rev_prev) / rev_prev
+                inv_g = (inv_now - inv_prev) / inv_prev
+                if inv_g - rev_g > 0.30 and inv_g > 0.20:
+                    flags.append(RedFlagItem(
+                        id=make_flag_id("Buffett", "inventory_growth_divergence"),
+                        framework="Buffett Quality",
+                        level=LEVEL_HIGH,
+                        title="存货恶性积压异象 (存货增速远超营收增速，存货积压减值风险)",
+                        value=round((inv_g - rev_g) * 100, 1),
+                        threshold="存货增速 - 营收增速 > 30pp",
+                        evidence=f"存货增速={inv_g*100:.1f}%, 营收增速={rev_g*100:.1f}%, 剪刀差达 {(inv_g-rev_g)*100:.1f}pp",
+                        node="quality",
+                        metric_refs=["scissors_gap", "inventories"],
+                    ))
 
-            if rev_prev > 0 and rev_now > 0:
-                rev_g = (rev_now - rev_prev) / rev_prev
+        return flags
 
-                # 应收账款增速远高于营收增速
-                if rec_prev > 0:
-                    rec_g = (rec_now - rec_prev) / rec_prev
-                    if (rec_g - rev_g) > 0.20:
-                        flags.append(RedFlagItem(
-                            id=make_flag_id("Buffett", "receivable_scissors_gap"),
-                            framework="Buffett Quality",
-                            level=LEVEL_HIGH,
-                            title="应收账款增速远超营业收入 (放宽信用激进确认)",
-                            value=round((rec_g - rev_g) * 100, 1),
-                            threshold="应收增速 - 营收增速 > 20pp",
-                            evidence=f"应收增速 {rec_g*100:.1f}% vs 营收增速 {rev_g*100:.1f}% (剪刀差 {(rec_g-rev_g)*100:.1f}pp)",
-                            node="quality",
-                            metric_refs=["receivables"],
-                        ))
+    # ─────────────────────────────────────────────────────────────
+    # Framework 6: 主营业务侵蚀
+    # ─────────────────────────────────────────────────────────────
+    def _check_invest_income_erosion(
+        self, inc: pd.DataFrame, industry: str | None = None,
+    ) -> list[RedFlagItem]:
+        flags = []
+        if not _model_applicable("InvestIncomeErosion", industry):
+            return [_abstention_flag(
+                "InvestIncomeErosion", industry or "金融", "主营业务侵蚀模型",
+                f"标的归属于{industry or '金融'}业，证券投资属于常规经营业务，主动弃权。"
+            )]
+        if inc.empty:
+            return flags
 
-                # 存货增速远超营收增速
-                if inv_prev > 0:
-                    inv_g = (inv_now - inv_prev) / inv_prev
-                    if (inv_g - rev_g) > 0.30:
-                        flags.append(RedFlagItem(
-                            id=make_flag_id("Buffett", "inventory_scissors_gap"),
-                            framework="Buffett Quality",
-                            level=LEVEL_MEDIUM,
-                            title="存货增速远超营业收入 (存货积压减值雷)",
-                            value=round((inv_g - rev_g) * 100, 1),
-                            threshold="存货增速 - 营收增速 > 30pp",
-                            evidence=f"存货增速 {inv_g*100:.1f}% vs 营收增速 {rev_g*100:.1f}% (剪刀差 {(inv_g-rev_g)*100:.1f}pp)",
-                            node="quality",
-                            metric_refs=["inventory"],
-                        ))
+        y_now = inc.iloc[-1]
+        op = _safe_float(y_now.get("operate_profit")) or 0.0
+        inv = _safe_float(y_now.get("invest_income")) or 0.0
+        if op > 0 and inv > 0 and (inv / op) > 0.50:
+            ratio = inv / op
+            flags.append(RedFlagItem(
+                id=make_flag_id("Buffett", "invest_income_erosion"),
+                framework="Buffett Quality",
+                level=LEVEL_HIGH,
+                title="营业利润依赖非主营投资收益 (主营业务造血能力弱化)",
+                value=round(ratio, 3),
+                threshold="投资收益 / 营业利润 > 50%",
+                evidence=f"投资收益={inv/1e8:.2f} 亿，占营业利润比例高达 {ratio*100:.1f}%",
+                node="quality",
+                metric_refs=["invest_income_ratio"],
+            ))
 
-        # 4. 非经常性损益占比过高
-        op = _safe_float(y_now.get("operate_profit"))
-        total_p = _safe_float(y_now.get("total_profit")) or ni
-        if total_p and abs(total_p) > 1e5 and op is not None:
-            non_op = total_p - op
-            non_op_ratio = abs(non_op) / abs(total_p)
-            if non_op_ratio > 0.30:
+        return flags
+
+    # ─────────────────────────────────────────────────────────────
+    # Framework 7: Sloan Accrual Anomaly
+    # ─────────────────────────────────────────────────────────────
+    def _check_sloan(
+        self, bs: pd.DataFrame, inc: pd.DataFrame, cf: pd.DataFrame,
+        industry: str | None = None,
+    ) -> list[RedFlagItem]:
+        flags = []
+        if not _model_applicable("Sloan", industry):
+            return [_abstention_flag(
+                "Sloan", industry or "金融", "Sloan 应计异象",
+                f"标的归属于{industry or '金融'}业，Sloan 应计模型不适用金融业，主动弃权。"
+            )]
+        if inc.empty or bs.empty or cf.empty:
+            return flags
+
+        y_now = inc.iloc[-1]
+        b_now = bs.iloc[-1]
+        c_now = cf.iloc[-1]
+
+        ni = _first_present(y_now, ("n_income_attr_p", "n_income")) or 0.0
+        cfo = _safe_float(c_now.get("n_cashflow_act")) or 0.0
+        ta = _safe_float(b_now.get("total_assets")) or 0.0
+
+        if ta > 0:
+            accrual = (ni - cfo) / ta
+            if accrual > 0.10:
                 flags.append(RedFlagItem(
-                    id=make_flag_id("Buffett", "non_operating_profit_high"),
-                    framework="Buffett Quality",
-                    level=LEVEL_HIGH if non_op_ratio > 0.50 else LEVEL_MEDIUM,
-                    title="非经常性损益占比过高 (盈利依赖非主营)",
-                    value=round(non_op_ratio, 2),
-                    threshold="|非经常性损益| / |利润总额| > 30%",
-                    evidence=f"非经收益={non_op/1e8:.2f} 亿，占利润总额比例高达 {non_op_ratio*100:.1f}%",
+                    id=make_flag_id("Sloan", "high_accrual_anomaly"),
+                    framework="Sloan Accrual",
+                    level=LEVEL_HIGH,
+                    title="高应计项目异象 (利润现金含量极低)",
+                    value=round(accrual, 3),
+                    threshold="应计利润 / 总资产 > 10%",
+                    evidence=f"应计利润率={accrual*100:.2f}% (净利={ni/1e8:.2f}亿, CFO={cfo/1e8:.2f}亿, 总资产={ta/1e8:.2f}亿)",
                     node="quality",
-                    metric_refs=["non_operating"],
+                    metric_refs=["sloan_accrual"],
                 ))
 
         return flags
 
     # ─────────────────────────────────────────────────────────────
-    # Framework 6: 主营业务侵蚀 (投资收益占营业利润过高, 对齐 Ashare financial_audit.py:523)
-    # ─────────────────────────────────────────────────────────────
-    def _check_invest_income_erosion(self, inc: pd.DataFrame) -> list[RedFlagItem]:
-        flags = []
-        if inc.empty:
-            return flags
-
-        now = inc.iloc[-1]
-        op = _safe_float(now.get("operate_profit"))
-        if not op or op <= 0:
-            return flags
-
-        inv = (_safe_float(now.get("invest_income")) or 0.0) + (_safe_float(now.get("fv_value_chg_gain")) or 0.0)
-        ratio = inv / op
-        if ratio > 0.30:
-            flags.append(RedFlagItem(
-                id=make_flag_id("Buffett", "invest_income_in_operating_profit"),
-                framework="Buffett Quality",
-                level=LEVEL_HIGH if ratio > 0.50 else LEVEL_MEDIUM,
-                title="投资收益占营业利润过高 (非主营收益顶高估值)",
-                value=round(ratio, 3),
-                threshold="(投资收益+公允价值变动)/营业利润 > 30%",
-                evidence=f"投资类收益 {inv/1e8:.2f}亿 / 营业利润 {op/1e8:.2f}亿 (占比 {ratio*100:.1f}%)",
-                node="quality",
-                metric_refs=["non_operating"],
-            ))
-
-        return flags
-
-    # ─────────────────────────────────────────────────────────────
-    # Framework 7: Sloan Accrual Anomaly (对齐 Ashare financial_audit.py:581)
-    # ─────────────────────────────────────────────────────────────
-    def _check_sloan(self, bs: pd.DataFrame, inc: pd.DataFrame, cf: pd.DataFrame) -> list[RedFlagItem]:
-        flags = []
-        if bs.empty or inc.empty or cf.empty:
-            return flags
-
-        ta = _safe_float(bs.iloc[-1].get("total_assets"))
-        ni = _safe_float(inc.iloc[-1].get("n_income")) or _safe_float(inc.iloc[-1].get("n_income_attr_p"))
-        cfo = _safe_float(cf.iloc[-1].get("n_cashflow_act"))
-
-        if not ta or ta <= 0 or ni is None or cfo is None:
-            return flags
-
-        accrual_ratio = (ni - cfo) / ta
-        if abs(accrual_ratio) > config.SLOAN_ACCRUAL_FATAL_RATIO:
-            flags.append(RedFlagItem(
-                id=make_flag_id("Sloan", "high_accrual"),
-                framework="Sloan Accrual",
-                level=LEVEL_HIGH if accrual_ratio > config.SLOAN_ACCRUAL_FATAL_RATIO else LEVEL_MEDIUM,
-                title="高应计异象 (纸面富贵，经营现金流严重落后利润)",
-                value=round(accrual_ratio, 3),
-                threshold=f"|NI - OCF| / TA > {config.SLOAN_ACCRUAL_FATAL_RATIO*100:.0f}%",
-                evidence=f"应计利润率={accrual_ratio*100:.1f}% (应计额={(ni-cfo)/1e8:.2f}亿 / 总资产={ta/1e8:.2f}亿)",
-                node="quality",
-                metric_refs=["accrual"],
-            ))
-
-        return flags
-
-    # ─────────────────────────────────────────────────────────────
-    # Framework 8: Governance Red Flags (对齐 Ashare financial_audit.py:619)
+    # Framework 8: Governance Red Flags
     # ─────────────────────────────────────────────────────────────
     def _check_governance(self, gov: dict[str, Any]) -> list[RedFlagItem]:
         flags = []
-        pledge = _safe_float(gov.get("pledge_ratio"), 0.0)
-        if pledge > config.PLEDGE_FATAL_RATIO:
+        if not gov:
+            return flags
+
+        # 1. 质押率
+        pledge = _safe_float(gov.get("pledge_ratio"))
+        fatal_pledge_th = getattr(config, "GOVERNANCE_PLEDGE_FATAL_RATIO", getattr(config, "PLEDGE_FATAL_RATIO", 0.70))
+        warn_pledge_th = getattr(config, "GOVERNANCE_PLEDGE_WARN_RATIO", getattr(config, "PLEDGE_HIGH_RATIO", 0.50))
+        if pledge is None:
+            flags.append(RedFlagItem(
+                id=make_flag_id("Governance", "unverified_pledge_ratio"),
+                framework="Governance",
+                level=LEVEL_INFO,
+                title="质押比例未核验 (数据通道缺失，无法排查平仓风险)",
+                value=None,
+                threshold="控股股东质押比例需可核验",
+                evidence="F10 数据未披露控股股东质押比例或数据接口未返回，无法排除极端质押爆仓风险",
+                node="path",
+                metric_refs=["pledge_ratio"],
+            ))
+        elif pledge >= fatal_pledge_th:
             flags.append(RedFlagItem(
                 id=make_flag_id("Governance", "fatal_pledge_ratio"),
                 framework="Governance",
                 level=LEVEL_FATAL,
-                title="控股股东高比例质押暴雷风险 (平仓线悬顶)",
+                title="控股股东高比例质押爆仓风险 (平仓线危机)",
                 value=round(pledge, 3),
-                threshold=f"持股质押比例 > {config.PLEDGE_FATAL_RATIO*100:.0f}% 致命",
-                evidence=f"控股股东/实控人累计质押比例高达 {pledge*100:.1f}%，极易遭遇被动平仓与连环跌停",
+                threshold=f"质押比例 >= {fatal_pledge_th*100:.0f}% 致命",
+                evidence=f"控股股东/实控人质押比例高达 {pledge*100:.1f}%，极易在下行周期触及平仓线引发被动减持踩踏",
                 node="path",
-                metric_refs=["pledge"],
+                metric_refs=["pledge_ratio"],
             ))
-        elif pledge > 0.50:
+        elif pledge >= warn_pledge_th:
             flags.append(RedFlagItem(
-                id=make_flag_id("Governance", "high_pledge_ratio"),
+                id=make_flag_id("Governance", "warn_pledge_ratio"),
                 framework="Governance",
                 level=LEVEL_HIGH,
-                title="控股股东质押比例偏高",
+                title="股东质押比例偏高预警",
                 value=round(pledge, 3),
-                threshold="持股质押比例 > 50% 警示",
-                evidence=f"质押比例 {pledge*100:.1f}%",
+                threshold=f"质押比例 >= {warn_pledge_th*100:.0f}%",
+                evidence=f"质押比例 {pledge*100:.1f}%，需关注股价异动时的质押补仓压力",
                 node="path",
-                metric_refs=["pledge"],
+                metric_refs=["pledge_ratio"],
             ))
 
-        if gov.get("has_reduction_plan") or gov.get("hold_decrease_shares", 0) > 1_000_000:
+        # 2. 监管违规处罚
+        v_recent = int(gov.get("recent_violations") or gov.get("recent_violation_count") or 0)
+        v_total = int(gov.get("total_violations") or gov.get("violation_count") or 0)
+        fatal_violation_count = getattr(config, "GOVERNANCE_VIOLATION_FATAL_COUNT", 3)
+        if v_recent >= fatal_violation_count:
             flags.append(RedFlagItem(
-                id=make_flag_id("Governance", "shareholder_reduction"),
+                id=make_flag_id("Governance", "fatal_regulatory_violations"),
+                framework="Governance",
+                level=LEVEL_FATAL,
+                title="近期监管违规处罚密集 (合规失信致命)",
+                value=v_recent,
+                threshold=f"近1年违规处罚 >= {fatal_violation_count} 次",
+                evidence=f"近1年内发生 {v_recent} 起违规处罚，反映公司内部治理与合规失控，触碰买方红线",
+                node="path",
+                metric_refs=["violations"],
+            ))
+        elif v_total > 0 or v_recent > 0 or gov.get("has_violation_record"):
+            flags.append(RedFlagItem(
+                id=make_flag_id("Governance", "warn_regulatory_violations"),
                 framework="Governance",
                 level=LEVEL_HIGH,
-                title="大股东/高管近期有集中减持计划",
-                value="在途减持",
-                threshold="净减持 > 100 万股或在途公告",
-                evidence="公告显示存在大股东竞价减持计划或减持超 100 万股，高位抛压沉重",
+                title="存在历史监管处罚记录 (违规治理瑕疵预警)",
+                value=max(v_recent, v_total),
+                threshold="存在历史违规记录",
+                evidence=f"历史记录累计 {v_total} 起违规处罚，近期 {v_recent} 起",
                 node="path",
-                metric_refs=["top10_change"],
-            ))
-
-        # 股权极度分散无实控人风险
-        top1_ratio = _safe_float(gov.get("top1_holder_ratio"))
-        if top1_ratio is not None and top1_ratio < 0.10:
-            flags.append(RedFlagItem(
-                id=make_flag_id("Governance", "dispersed_ownership"),
-                framework="Governance",
-                level=LEVEL_MEDIUM,
-                title="无实控人与股权极度分散风险",
-                value=round(top1_ratio * 100, 1),
-                threshold="第一大股东持股比例 < 10%",
-                evidence=f"第一大股东持股仅 {top1_ratio*100:.1f}%，极易发生控制权争夺或内部人治理失灵",
-                node="path",
-                metric_refs=["governance"],
+                metric_refs=["violations"],
             ))
 
         return flags
 
     # ─────────────────────────────────────────────────────────────
-    # Framework 9: Shareholder Flow (对齐 Ashare financial_audit.py:692)
+    # Framework 9: Shareholder Flow
     # ─────────────────────────────────────────────────────────────
     def _check_shareholder_flow(self, gov: dict[str, Any]) -> list[RedFlagItem]:
         flags = []
-        holder_change_pct = _safe_float(gov.get("holder_change_pct"))
-        if holder_change_pct is not None:
-            if holder_change_pct > 20.0:
+        flow = gov.get("holder_change_pct")
+        if flow is not None:
+            flow_val = _safe_float(flow)
+            if flow_val is not None and flow_val > 0.20:
                 flags.append(RedFlagItem(
-                    id=make_flag_id("ShareholderFlow", "holder_surge_fatal"),
+                    id=make_flag_id("Shareholder", "retail_dispersion_risk"),
                     framework="Shareholder Flow",
                     level=LEVEL_HIGH,
-                    title="股东户数急剧激增 (散户接盘，主力高位出逃)",
-                    value=round(holder_change_pct, 1),
-                    threshold="环比增加 > 20%",
-                    evidence=f"最新一期股东户数环比激增 {holder_change_pct:.1f}%，筹码集中度迅速恶化",
-                    node="path",
-                    metric_refs=["holder_count"],
+                    title="筹码急剧散户化预警 (股东户数大幅激增)",
+                    value=round(flow_val * 100, 1),
+                    threshold="股东户数增幅 > 20%",
+                    evidence=f"最新期股东户数环比激增 {flow_val*100:.1f}%，筹码呈现大幅派发散户化迹象",
+                    node="tape",
+                    metric_refs=["holder_change"],
                 ))
-            elif holder_change_pct > 5.0:
-                flags.append(RedFlagItem(
-                    id=make_flag_id("ShareholderFlow", "holder_increase"),
-                    framework="Shareholder Flow",
-                    level=LEVEL_MEDIUM,
-                    title="股东户数上升 (筹码分散与高位承接风险)",
-                    value=round(holder_change_pct, 1),
-                    threshold="环比增加 > 5%",
-                    evidence=f"股东户数环比增加 {holder_change_pct:.1f}%，散户新进涌入",
-                    node="path",
-                    metric_refs=["holder_count"],
-                ))
-            elif holder_change_pct < -5.0:
-                flags.append(RedFlagItem(
-                    id=make_flag_id("ShareholderFlow", "holder_decrease_positive"),
-                    framework="Shareholder Flow",
-                    level=LEVEL_LOW,
-                    title="股东户数减少 (筹码向主力集中)",
-                    value=round(holder_change_pct, 1),
-                    threshold="环比减少 > 5%",
-                    evidence=f"股东户数环比减少 {abs(holder_change_pct):.1f}%，主力吸筹锁仓",
-                    node="path",
-                    metric_refs=["holder_count"],
-                ))
-
         return flags
 
     # ─────────────────────────────────────────────────────────────
-    # Framework 9: Forward Guidance Anomaly (对齐 Ashare financial_audit.py:758)
+    # Framework 10: Forward Guidance Anomaly
     # ─────────────────────────────────────────────────────────────
     def _check_forecast_anomaly(self, gov: dict[str, Any]) -> list[RedFlagItem]:
         flags = []
         fc = gov.get("forecast")
         if not fc or not isinstance(fc, dict):
             return flags
+
         ftype = str(fc.get("type") or "")
         p_min = _safe_float(fc.get("p_change_min"))
         p_max = _safe_float(fc.get("p_change_max"))
@@ -778,136 +896,222 @@ class AuditEngine:
                 metric_refs=["forecast"],
             ))
 
-        if p_min is not None and p_max is not None:
-            width = abs(p_max - p_min)
-            if width > 50:
+        already_fatal = any(f.level == LEVEL_FATAL for f in flags)
+        if (p_min is not None or p_max is not None) and not already_fatal:
+            p_change_pct = min(v for v in (p_min, p_max) if v is not None)
+            fatal_pct = config.FORECAST_DROP_FATAL_RATIO * 100.0
+            if p_change_pct <= fatal_pct:
                 flags.append(RedFlagItem(
-                    id=make_flag_id("Forecast", "wide_forecast_spread"),
+                    id=make_flag_id("Forecast", "fatal_forecast_collapse"),
                     framework="Forecast Anomaly",
-                    level=LEVEL_MEDIUM,
-                    title="预告区间过宽 (业绩不确定性大)",
-                    value=round(width, 1),
-                    threshold="区间宽度 > 50pp",
-                    evidence=f"最新预告区间宽度高达 {width:.1f}pp ({p_min}%~{p_max}%)",
+                    level=LEVEL_FATAL,
+                    title="业绩预告断崖式变脸 (扣非同比暴跌)",
+                    value=round(p_change_pct, 1),
+                    threshold=f"预告同比变动 <= {fatal_pct:.0f}% 致命",
+                    evidence=f"{ann_date} 预告同比变动下限 {p_change_pct:.1f}%，已跌破 {fatal_pct:.0f}% 断崖线，业绩变脸风险一票否决",
                     node="state",
                     metric_refs=["forecast"],
                 ))
+
         return flags
 
     # ─────────────────────────────────────────────────────────────
-    # Framework 10: Valuation Anomaly (对齐 Ashare financial_audit.py:812)
+    # Framework 11: Valuation Anomaly
     # ─────────────────────────────────────────────────────────────
-    def _check_valuation(self, bs: pd.DataFrame, inc: pd.DataFrame, q: dict[str, Any]) -> list[RedFlagItem]:
+    def _check_valuation(
+        self, bs: pd.DataFrame, inc: pd.DataFrame, quote_info: dict[str, Any],
+    ) -> list[RedFlagItem]:
         flags = []
-        if bs.empty or inc.empty:
-            return flags
-
-        eq = _safe_float(bs.iloc[-1].get("total_hldr_eqy_exc_min_int")) or _safe_float(bs.iloc[-1].get("total_equity"))
-        ni = _safe_float(inc.iloc[-1].get("n_income_attr_p")) or _safe_float(inc.iloc[-1].get("n_income"))
-        price = _safe_float(q.get("close"))
-
-        if not eq or eq <= 0 or not price or price <= 0:
-            return flags
-
-        total_share = _safe_float(bs.iloc[-1].get("total_share"))
-        if not total_share or total_share <= 0:
-            return flags
-
-        mv = price * total_share
-        pb = mv / eq
-        roe = (ni / eq) if ni else 0.0
-
-        # 1. PB vs ROE 错配 (Gordon 检验: 理论合理 PB ≈ ROE / 8%)
-        fair_pb = (roe / 0.08) if roe > 0 else 0.5
-        if fair_pb > 0 and pb > fair_pb * 2.0:
+        pe = _safe_float(quote_info.get("pe"))
+        pb = _safe_float(quote_info.get("pb"))
+        if pe is not None and pe > 120.0:
             flags.append(RedFlagItem(
-                id=make_flag_id("Valuation", "pb_roe_mismatch"),
-                framework="Valuation",
+                id=make_flag_id("Valuation", "extreme_high_pe"),
+                framework="Valuation Anomaly",
                 level=LEVEL_HIGH,
-                title="PB vs ROE 严重错配 (市场透支未来盈利预期)",
-                value=round(pb / fair_pb, 2),
-                threshold="PB / 合理PB > 2 警示",
-                evidence=f"市净率 {pb:.2f} 倍; 按 ROE={roe*100:.1f}% 理论合理 PB 仅约 {fair_pb:.2f} 倍，现价透支达 {pb/fair_pb:.1f} 倍",
+                title="静态市盈率畸高透支 (PE > 120x)",
+                value=round(pe, 1),
+                threshold="PE > 120",
+                evidence=f"静态 PE 达 {pe:.1f} 倍，远超行业合理估值溢价空间",
                 node="odds",
-                metric_refs=["pb"],
+                metric_refs=["pe"],
             ))
-        elif fair_pb > 0 and pb < fair_pb * 0.5:
-            flags.append(RedFlagItem(
-                id=make_flag_id("Valuation", "pb_roe_undervalued"),
-                framework="Valuation",
-                level=LEVEL_LOW,
-                title="PB vs ROE 具备显著估值安全边际",
-                value=round(pb / fair_pb, 2),
-                threshold="PB / 合理PB < 0.5",
-                evidence=f"市净率 {pb:.2f} 倍，低于理论合理估值 {fair_pb:.2f} 倍一半以上",
-                node="odds",
-                metric_refs=["pb"],
-            ))
-
-        # 2. 小盘亏损 + 高 PB 双杀 (市值 < 100 亿 + 亏损 + PB > 5)
-        if mv < 10_000_000_000 and (ni is None or ni <= 0) and pb > 5.0:
-            flags.append(RedFlagItem(
-                id=make_flag_id("Valuation", "small_cap_loss_high_pb"),
-                framework="Valuation",
-                level=LEVEL_HIGH,
-                title="小盘亏损 + 高 PB 纯题材投机双杀",
-                value=f"mv={mv/1e8:.1f}亿, PB={pb:.1f}x",
-                threshold="市值 < 100 亿 + 亏损 + PB > 5",
-                evidence=f"总市值 {mv/1e8:.1f} 亿元，当前亏损，PB={pb:.2f}x 缺乏基本面支撑",
-                node="odds",
-                metric_refs=["pb"],
-            ))
-
         return flags
 
     # ─────────────────────────────────────────────────────────────
-    # Framework 11: Related-Party Exposure (对齐 Ashare financial_audit.py:954)
+    # Framework 12: Related-Party Exposure
     # ─────────────────────────────────────────────────────────────
     def _check_related_party_exposure(self, bs: pd.DataFrame, inc: pd.DataFrame) -> list[RedFlagItem]:
         flags = []
         if bs.empty:
             return flags
+        b_now = bs.iloc[-1]
+        ta = _safe_float(b_now.get("total_assets")) or 0.0
+        lt_eq = _safe_float(b_now.get("lt_eqt_invest")) or 0.0
+        oth_rec = _safe_float(b_now.get("oth_receiv")) or 0.0
+        if ta > 0 and (oth_rec / ta) > 0.15:
+            ratio = oth_rec / ta
+            flags.append(RedFlagItem(
+                id=make_flag_id("Governance", "high_other_receivables"),
+                framework="Governance",
+                level=LEVEL_HIGH,
+                title="其他应收款畸高预警 (警惕大股东资金占用)",
+                value=round(ratio, 3),
+                threshold="其他应收款 / 总资产 > 15%",
+                evidence=f"其他应收款={oth_rec/1e8:.2f} 亿，占总资产比例高达 {ratio*100:.1f}%",
+                node="quality",
+                metric_refs=["oth_receiv"],
+            ))
+        return flags
+
+    # ─────────────────────────────────────────────────────────────
+    # Framework 13: 存贷双高与利息/债务倒挂排雷
+    # ─────────────────────────────────────────────────────────────
+    def _check_high_cash_high_debt(
+        self, bs: pd.DataFrame, inc: pd.DataFrame, industry: str | None = None,
+    ) -> list[RedFlagItem]:
+        flags: list[RedFlagItem] = []
+        if is_financial(industry):
+            return flags
+        if bs is None or bs.empty:
+            return flags
 
         b_now = bs.iloc[-1]
         ta = _safe_float(b_now.get("total_assets"))
-        lt_now = _safe_float(b_now.get("lt_eqt_invest"), 0.0)
+        if not ta or ta <= 0:
+            return flags
 
-        # 长期股权投资大幅波动 (需 2 期，且遵循会计重要性原则：占总资产 > 1% 或绝对金额变动 > 5000 万)
-        if len(bs) >= 2 and ta and ta > 0:
+        money_cap = _safe_float(b_now.get("money_cap"), 0.0) or 0.0
+        st_borr = _safe_float(b_now.get("st_borr"), 0.0) or 0.0
+        lt_borr = _safe_float(b_now.get("lt_borr"), 0.0) or 0.0
+        ncl_due_1y = _safe_float(b_now.get("non_cur_liab_due_1y"), 0.0) or 0.0
+        ibd = st_borr + lt_borr + ncl_due_1y
+
+        cash_ratio = money_cap / ta
+        debt_ratio = ibd / ta
+
+        fatal_cash_th = getattr(config, "FORENSIC_CASH_RATIO_FATAL", 0.25)
+        fatal_debt_th = getattr(config, "FORENSIC_DEBT_RATIO_FATAL", 0.25)
+        warn_cash_th = getattr(config, "FORENSIC_CASH_RATIO_WARN", 0.20)
+        warn_debt_th = getattr(config, "FORENSIC_DEBT_RATIO_WARN", 0.20)
+
+        fin_exp = 0.0
+        op = 0.0
+        if inc is not None and not inc.empty:
+            y_now = inc.iloc[-1]
+            fin_exp = _safe_float(y_now.get("fin_exp"), 0.0) or 0.0
+            op = _safe_float(y_now.get("operate_profit"), 0.0) or 0.0
+
+        erosion_th = getattr(config, "FORENSIC_FIN_EXP_EROSION_RATIO", 0.25)
+        has_severe_erosion = (
+            (fin_exp > 0 and op > 0 and (fin_exp / op) >= erosion_th)
+            or (fin_exp > 0 and op <= 0)
+            or (fin_exp >= 100_000_000 and (fin_exp / money_cap) >= 0.035 if money_cap > 0 else False)
+        )
+
+        if cash_ratio >= fatal_cash_th and debt_ratio >= fatal_debt_th and has_severe_erosion:
+            flags.append(RedFlagItem(
+                id=make_flag_id("Forensic", "fatal_high_cash_high_debt"),
+                framework="Forensic Accounting",
+                level=LEVEL_FATAL,
+                title="存贷双高与财务费用严重侵蚀 (造假/受限资金极高危)",
+                value=f"现金{cash_ratio*100:.1f}%, 负债{debt_ratio*100:.1f}%",
+                threshold=f"货币资金>={fatal_cash_th*100:.0f}% 且 有息负债>={fatal_debt_th*100:.0f}% 且 财务费用重度侵蚀",
+                evidence=(
+                    f"账面货币资金高达 {money_cap/1e8:.2f} 亿 (占资产 {cash_ratio*100:.1f}%)，"
+                    f"同时背负高达 {ibd/1e8:.2f} 亿有息负债 (占资产 {debt_ratio*100:.1f}%)，"
+                    f"且当期财务费用高达 {fin_exp/1e8:.2f} 亿侵蚀营业利润。典型存贷双高虚假暴雷形态。"
+                ),
+                node="quality",
+                metric_refs=["high_cash_high_debt", "money_cap"],
+            ))
+        elif cash_ratio >= warn_cash_th and debt_ratio >= warn_debt_th:
+            flags.append(RedFlagItem(
+                id=make_flag_id("Forensic", "warn_high_cash_high_debt"),
+                framework="Forensic Accounting",
+                level=LEVEL_HIGH,
+                title="存贷双高结构性异常 (资金利用效率低下或存在受限资金)",
+                value=f"现金{cash_ratio*100:.1f}%, 负债{debt_ratio*100:.1f}%",
+                threshold=f"货币资金占比 >= {warn_cash_th*100:.0f}% 且 有息负债占比 >= {warn_debt_th*100:.0f}%",
+                evidence=(
+                    f"账面货币资金 {money_cap/1e8:.2f} 亿 (占资产 {cash_ratio*100:.1f}%) 与有息负债 {ibd/1e8:.2f} 亿并存。"
+                ),
+                node="quality",
+                metric_refs=["high_cash_high_debt", "money_cap"],
+            ))
+
+        return flags
+
+    # ─────────────────────────────────────────────────────────────
+    # Framework 14: 在建工程长期不转固与异常膨胀排雷
+    # ─────────────────────────────────────────────────────────────
+    def _check_cip_anomaly(
+        self, bs: pd.DataFrame, inc: pd.DataFrame, industry: str | None = None,
+    ) -> list[RedFlagItem]:
+        flags: list[RedFlagItem] = []
+        if is_financial(industry):
+            return flags
+        if bs is None or bs.empty:
+            return flags
+
+        b_now = bs.iloc[-1]
+        ta_now = _safe_float(b_now.get("total_assets"))
+        if ta_now is None or ta_now <= 0:
+            return flags
+
+        cip_now = _safe_float(b_now.get("cip"), 0.0) or 0.0
+        fix_now = _safe_float(b_now.get("fix_assets"), 0.0) or 0.0
+        if cip_now <= 0:
+            return flags
+
+        cip_to_fix = (cip_now / fix_now) if fix_now > 0 else 999.0
+        cip_to_ta = cip_now / ta_now
+
+        cip_warn_th = getattr(config, "FORENSIC_CIP_TO_FIXED_WARN", 0.40)
+        cip_fatal_th = getattr(config, "FORENSIC_CIP_TO_FIXED_FATAL", 0.60)
+        cip_ta_min = getattr(config, "FORENSIC_CIP_TO_ASSETS_MIN", 0.15)
+
+        has_stagnant_cip = False
+        cip_prev = 0.0
+        fix_prev = 0.0
+        if len(bs) >= 2:
             b_prev = bs.iloc[-2]
-            lt_prev = _safe_float(b_prev.get("lt_eqt_invest"), 0.0)
-            if lt_prev and lt_prev > 0 and lt_now:
-                chg = (lt_now - lt_prev) / lt_prev
-                # 重要性门槛: 长期股权投资占总资产至少达到 1% 或变动绝对金额超 5000 万，微小体量排除误报
-                is_material = (lt_now / ta > 0.01) or (abs(lt_now - lt_prev) > 50_000_000)
-                if is_material and abs(chg) > 0.30:
-                    flags.append(RedFlagItem(
-                        id=make_flag_id("RelatedParty", "lt_equity_fluctuation"),
-                        framework="Related-Party Exposure",
-                        level=LEVEL_HIGH if chg < 0 else LEVEL_MEDIUM,
-                        title="长期股权投资大幅波动 (参股公司潜在权益法爆雷风险)",
-                        value=round(chg, 3),
-                        threshold="变动幅度 > 30% 且占总资产 > 1%",
-                        evidence=f"长期股权投资由 {lt_prev/1e8:.2f} 亿变为 {lt_now/1e8:.2f} 亿 (变动 {chg*100:+.1f}%)，占总资产 {lt_now/ta*100:.2f}%",
-                        node="quality",
-                        metric_refs=["related_party"],
-                    ))
+            cip_prev = _safe_float(b_prev.get("cip"), 0.0) or 0.0
+            fix_prev = _safe_float(b_prev.get("fix_assets"), 0.0) or 0.0
+            if fix_prev > 0 and cip_prev > 0:
+                cip_prev_to_fix = cip_prev / fix_prev
+                fix_growth = (fix_now - fix_prev) / fix_prev
+                if cip_to_fix >= 0.40 and cip_prev_to_fix >= 0.40 and fix_growth < 0.08:
+                    has_stagnant_cip = True
 
-        # 投资收益持续大额负值
-        if not inc.empty:
-            now_inc = inc.iloc[-1]
-            inv_inc = _safe_float(now_inc.get("invest_income"), 0.0)
-            if inv_inc < -10_000_000:
-                flags.append(RedFlagItem(
-                    id=make_flag_id("RelatedParty", "invest_income_loss"),
-                    framework="Related-Party Exposure",
-                    level=LEVEL_HIGH,
-                    title="投资收益大额负值 (联营企业权益法损失拖累)",
-                    value=round(inv_inc / 1e8, 2),
-                    threshold="投资收益 < -1000 万元",
-                    evidence=f"最新期投资收益亏损 {inv_inc/1e8:.2f} 亿元",
-                    node="quality",
-                    metric_refs=["related_party"],
-                ))
+        if cip_now >= 100_000_000 and (
+            (has_stagnant_cip and cip_to_ta >= cip_ta_min)
+            or (cip_to_fix >= cip_fatal_th and cip_to_ta >= cip_ta_min)
+            or (cip_to_fix >= 1.0 and cip_now >= 200_000_000)
+        ):
+            ev = f"最新在建工程达 {cip_now/1e8:.2f} 亿元 (占固定资产 {cip_to_fix*100:.1f}%，占总资产 {cip_to_ta*100:.1f}%)"
+            flags.append(RedFlagItem(
+                id=make_flag_id("Forensic", "cip_stagnant_anomaly"),
+                framework="Forensic Accounting",
+                level=LEVEL_HIGH,
+                title="在建工程长期不转固与异常膨胀 (疑似延迟折旧或虚构工程)",
+                value=f"在建/固资={cip_to_fix*100:.1f}%, 占资产={cip_to_ta*100:.1f}%",
+                threshold=f"在建工程/固定资产 >= {cip_fatal_th*100:.0f}% 且 占资产 >= {cip_ta_min*100:.0f}% 且转固滞后",
+                evidence=ev,
+                node="quality",
+                metric_refs=["cip_anomaly", "cip"],
+            ))
+        elif cip_now >= 50_000_000 and (cip_to_fix >= cip_warn_th or cip_to_ta >= cip_ta_min):
+            flags.append(RedFlagItem(
+                id=make_flag_id("Forensic", "cip_scale_warning"),
+                framework="Forensic Accounting",
+                level=LEVEL_MEDIUM,
+                title="在建工程规模庞大 (未来转固折旧承压)",
+                value=f"在建/固资={cip_to_fix*100:.1f}%, 占资产={cip_to_ta*100:.1f}%",
+                threshold=f"在建工程/固定资产 >= {cip_warn_th*100:.0f}% 或 占资产 >= {cip_ta_min*100:.0f}%",
+                evidence=f"在建工程金额达 {cip_now/1e8:.2f} 亿元，占固定资产比例达 {cip_to_fix*100:.1f}% (占总资产 {cip_to_ta*100:.1f}%)",
+                node="quality",
+                metric_refs=["cip_anomaly", "cip"],
+            ))
 
         return flags

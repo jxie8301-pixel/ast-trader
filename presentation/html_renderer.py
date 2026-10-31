@@ -6,6 +6,95 @@ import os
 from datetime import datetime
 from typing import Any
 
+from presentation.plain_language import (
+    PLAIN_PILLAR_TITLES,
+    explain_terms,
+    generate_plain_triad_coaching,
+    one_line_summary,
+    plain,
+)
+
+
+def _scenario_block_html(pb: Any) -> str:
+    """AI 情景研判区块。**仅在 AI 启用且确实给出研判时**才渲染。
+
+    ★ 明确标注「不含价位」：AI 被明令禁止输出任何价格，
+      挂单一律以 `entry_price_range` 为准，避免读者把研判当成价位指令。
+    """
+    note = getattr(pb, "scenario_note", "") or ""
+    if not note.strip():
+        return ""
+    return f"""
+            <div class="pb-item" style="grid-column: 1 / -1;">
+                <span class="pb-label">🧭 盘中情景应对（AI 研判 · 不含价位）</span>
+                <span class="pb-value" style="white-space: pre-wrap;">{html.escape(plain(note))}</span>
+            </div>
+            """
+
+
+def _glossary_section_html(card: dict[str, Any]) -> str:
+    """术语速查：★ 只列本报告正文里**真正出现**的说法。
+
+    整表照抄没人会看，按需列出才有效；没有命中就不渲染，避免留个空表头。
+    """
+    blob = " ".join(
+        str(card.get(k) or "")
+        for k in (
+            "pillar_1_quality", "pillar_2_state", "pillar_3_odds", "pillar_4_path",
+            "action_tactic", "core_contradiction", "invalidation_line",
+        )
+    )
+    terms = explain_terms(blob, limit=12)
+    if not terms:
+        return ""
+    rows = "".join(
+        f"<tr><td style='color:var(--neon-cyan); white-space:nowrap;'><strong>{html.escape(j)}</strong></td>"
+        f"<td>{html.escape(m)}</td></tr>"
+        for j, m in terms
+    )
+    return f"""
+        <section class="section-card">
+            <h2>📖 术语速查（本报告用到的说法）</h2>
+            <table class="table">
+                <tbody>{rows}</tbody>
+            </table>
+        </section>
+        """
+
+
+#: 行动档位 → (徽章样式, 顶部标签)。取值域对齐 pillar5 的六档词汇
+#: （core/ai_enrichment.NODE_VERDICT_DOMAIN["node_decision"]）。
+#:
+#: ★ 20261029 审计 P1-13：原映射只认「买入 / 观察」两档，其余一律落到
+#:   ``else → 🔴 回避/空仓`` ——「期权仓(小)」本是可小仓试错的档位，却在报告顶部
+#:   被画成「🔴 回避 / 空仓」，与卡片正文的档位和仓位自相矛盾
+#:   （reports/002273_SZ_20261029.html）。报告给实盘执行者的必须是唯一结论。
+GEAR_BADGE: dict[str, tuple[str, str]] = {
+    "核心仓": ("badge-buy", "🟢 进攻 / 核心仓"),
+    "期权仓(小)": ("badge-buy", "🟢 试仓 / 小仓位博弈"),
+    "等证据临界(观察)": ("badge-watch", "🟡 观察 / 等证据"),
+    "不追高(贵但优质)": ("badge-watch", "🟡 观察 / 不追高"),
+    "减仓": ("badge-avoid", "🟠 减仓 / 降风险"),
+    "回避": ("badge-avoid", "🔴 回避 / 空仓"),
+    # 旧报告与其它链路仍可能出现这两档，保留兼容
+    "买入": ("badge-buy", "🟢 进攻 / 买入"),
+    "观察": ("badge-watch", "🟡 观察 / 试仓"),
+}
+
+
+def gear_display(gear: str, position_cap: float | None = None) -> tuple[str, str]:
+    """档位 → (徽章样式, 标签)。
+
+    ★ 未知档位一律以**仓位**兜底：有仓位就不是回避档。旧实现的 ``else`` 分支
+      把任何未知档位都画成「🔴 回避 / 空仓」，这正是「档位写着期权仓(小)、顶部
+      却标回避空仓」的来源。
+    """
+    if gear in GEAR_BADGE:
+        return GEAR_BADGE[gear]
+    if (position_cap or 0.0) > 0:
+        return ("badge-watch", f"🟡 观察 / {html.escape(str(gear))}")
+    return ("badge-avoid", f"🔴 回避 / {html.escape(str(gear))}")
+
 
 def render_decision_card_html(card: dict[str, Any], output_path: str | None = None) -> str:
     """将决断卡渲染为独立的离线 HTML 研报 (基于 A 股双轨逻辑与五维实盘支柱)."""
@@ -28,17 +117,27 @@ def render_decision_card_html(card: dict[str, Any], output_path: str | None = No
     circ_mv = card.get("circ_mv", 0.0) / 1e8
     turnover = card.get("turnover_ratio", 0.0)
     pe = card.get("pe", 0.0)
+    coaching = generate_plain_triad_coaching(card)
 
-    # 档位颜色与标识
-    if gear == "买入":
-        gear_badge_class = "badge-buy"
-        gear_label = "🟢 进攻 / 买入"
-    elif gear == "观察":
-        gear_badge_class = "badge-watch"
-        gear_label = "🟡 观察 / 试仓"
+    # ★ 财务数据期次：不写出来，读者无法知道报告里的毛利率是哪一期的数。
+    #   A 股三张表是累计口径，期次 + 累计口径必须同时标出。
+    _pb = card.get("period_basis") or {}
+    period_label = str(_pb.get("label") or "")
+    period_cum = str(_pb.get("cumulative_desc") or "")
+    if period_label and not _pb.get("is_annual"):
+        period_strip = (
+            f"<span class='meta-item'>财务期次: <strong style='color:#fbbf24;'>"
+            f"{html.escape(period_label)}（{html.escape(period_cum)}口径，TTM 滚动）</strong></span>"
+        )
+    elif period_label:
+        period_strip = (
+            f"<span class='meta-item'>财务期次: <strong>{html.escape(period_label)}（全年）</strong></span>"
+        )
     else:
-        gear_badge_class = "badge-avoid"
-        gear_label = "🔴 回避 / 空仓"
+        period_strip = ""
+
+    # 档位颜色与标识（六档逐档映射，见 GEAR_BADGE）
+    gear_badge_class, gear_label = gear_display(gear, cap)
 
     pct_color = "#ef4444" if pct_chg > 0 else ("#10b981" if pct_chg < 0 else "#94a3b8")
     pct_sign = "+" if pct_chg > 0 else ""
@@ -56,8 +155,17 @@ def render_decision_card_html(card: dict[str, Any], output_path: str | None = No
         """
 
     # 红旗列表渲染
+    # 风险清单渲染 (严格去重)
     risk_rows = ""
-    for idx, r in enumerate(all_flags, 1):
+    seen_flags = set()
+    deduped_flags = []
+    for r in all_flags:
+        f_key = (str(r.get("framework", "")).strip().lower(), str(r.get("title", "")).strip().lower())
+        if f_key not in seen_flags:
+            seen_flags.add(f_key)
+            deduped_flags.append(r)
+
+    for idx, r in enumerate(deduped_flags, 1):
         lvl = r.get("level", "🟡")
         badge_cls = "badge-fatal" if lvl == "🔴" else ("badge-warn" if lvl == "🟠" else "badge-info")
         risk_rows += f"""
@@ -120,21 +228,34 @@ def render_decision_card_html(card: dict[str, Any], output_path: str | None = No
     bear_rk_str = ""
 
     if matrix:
-        synergy_score = getattr(matrix, "synergy_score", 0.0)
-        matrix_verdict_str = getattr(matrix, "matrix_verdict", "中性观望")
-        dominant_force_str = getattr(matrix, "dominant_force", "存量博弈")
-        bull_cat_str = getattr(matrix, "bull_catalyst", "")
-        bear_rk_str = getattr(matrix, "bear_risk", "")
-        for d in getattr(matrix, "dimensions", []):
-            d_badge_color = "#10b981" if d.status == "BULL" else ("#ef4444" if d.status == "VETO" else ("#f59e0b" if d.status == "NEUTRAL" else "#dc2626"))
+        if isinstance(matrix, dict):
+            synergy_score = float(matrix.get("synergy_score", 0.0) or 0.0)
+            matrix_verdict_str = str(matrix.get("matrix_verdict") or matrix.get("verdict") or "中性观望")
+            dominant_force_str = str(matrix.get("dominant_force", "存量博弈"))
+            bull_cat_str = str(matrix.get("bull_catalyst", ""))
+            bear_rk_str = str(matrix.get("bear_risk", ""))
+            dims = matrix.get("dimensions", [])
+        else:
+            synergy_score = getattr(matrix, "synergy_score", 0.0)
+            matrix_verdict_str = getattr(matrix, "matrix_verdict", "中性观望")
+            dominant_force_str = getattr(matrix, "dominant_force", "存量博弈")
+            bull_cat_str = getattr(matrix, "bull_catalyst", "")
+            bear_rk_str = getattr(matrix, "bear_risk", "")
+            dims = getattr(matrix, "dimensions", [])
+        for d in dims:
+            d_name = d.get("dimension_name", "") if isinstance(d, dict) else getattr(d, "dimension_name", "")
+            d_score = float(d.get("score", 0.0) if isinstance(d, dict) else getattr(d, "score", 0.0))
+            d_status = str(d.get("status", "NEUTRAL") if isinstance(d, dict) else getattr(d, "status", "NEUTRAL"))
+            d_sum = str(d.get("summary", "") if isinstance(d, dict) else getattr(d, "summary", ""))
+            d_badge_color = "#10b981" if d_status == "BULL" else ("#ef4444" if d_status == "VETO" else ("#f59e0b" if d_status == "NEUTRAL" else "#dc2626"))
             matrix_cards_html += f"""
             <div class="juror-card">
                 <div class="juror-header">
-                    <span class="juror-name">{html.escape(d.dimension_name)}</span>
-                    <span class="juror-school">得分: {d.score:.0f}分</span>
-                    <span class="juror-vote" style="background:{d_badge_color}">{d.status}</span>
+                    <span class="juror-name">{html.escape(d_name)}</span>
+                    <span class="juror-school">得分: {d_score:.0f}分</span>
+                    <span class="juror-vote" style="background:{d_badge_color}">{d_status}</span>
                 </div>
-                <div class="juror-comment">{html.escape(d.summary)}</div>
+                <div class="juror-comment">{html.escape(d_sum)}</div>
             </div>
             """
 
@@ -164,9 +285,10 @@ def render_decision_card_html(card: dict[str, Any], output_path: str | None = No
                 <span class="pb-value">{html.escape(getattr(pb, 'take_profit_target', ''))}</span>
             </div>
             <div class="pb-item">
-                <span class="pb-label">铁律死锁退出线</span>
+                <span class="pb-label">铁律死锁退出线（错了就卖）</span>
                 <span class="pb-value" style="color:#f87171; font-weight:700;">{html.escape(getattr(pb, 'invalidation_rule', ''))}</span>
             </div>
+            {_scenario_block_html(pb)}
         </div>
         """
 
@@ -212,6 +334,27 @@ def render_decision_card_html(card: dict[str, Any], output_path: str | None = No
 
     if not health_rows:
         health_rows = '<tr><td colspan="5" style="text-align:center; color:#94a3b8; padding:16px;">未记录接口健康度信息</td></tr>'
+
+    t_odds = card.get("tactical_odds") or (card.get("pillar_5_decision") or {}).get("tactical_odds")
+    tactical_odds_html = ""
+    if t_odds and isinstance(t_odds, dict):
+        if t_odds.get("is_circuit_broken") or gear in ("回避", "减仓") or cap <= 0.0:
+            tactical_odds_html = f'''
+        <div class="verdict-row" style="background: rgba(239, 68, 68, 0.08); border-left: 3px solid #ef4444; padding: 8px 12px; margin: 10px 0; border-radius: 4px;">
+            <strong style="color:#f87171;">⚡ 买方战术赔率熔断:</strong> 
+            当前决断为【{html.escape(gear)}】(仓位上限 {cap*100:.0f}%)，启动买方合规熔断，<strong>禁止设定买入区间与向上目标价</strong>，严格执行防守回避。
+        </div>
+        '''
+        else:
+            tactical_odds_html = f'''
+        <div class="verdict-row" style="background: rgba(16, 185, 129, 0.08); border-left: 3px solid #10b981; padding: 8px 12px; margin: 10px 0; border-radius: 4px;">
+            <strong>🎯 买方战术赔率卡:</strong> 
+            区间: <strong>{html.escape(str(t_odds.get('entry_range', '')))}</strong> &nbsp;|&nbsp; 
+            止损: <strong style="color:#f87171;">{html.escape(str(t_odds.get('stop_loss', '')))}</strong> &nbsp;|&nbsp; 
+            目标: <strong style="color:#34d399;">{html.escape(str(t_odds.get('target_price', '')))}</strong> &nbsp;|&nbsp; 
+            盈亏比: <strong style="color:#fbbf24;">{html.escape(str(t_odds.get('risk_reward_ratio', '')))}</strong>
+        </div>
+        '''
 
     if has_dh_errors or failed_interfaces > 0:
         health_status_banner = f'<span style="color:#ef4444; font-weight:700;">⚠️ 检测到 {failed_interfaces} 个数据通道发生异常阻断 (共调用 {total_interfaces} 个接口，成功 {succ_interfaces} 项，信息存在缺口降级)</span>'
@@ -387,6 +530,7 @@ def render_decision_card_html(card: dict[str, Any], output_path: str | None = No
                     <span class="meta-item">流通市值: <strong>{circ_mv:.1f} 亿元</strong></span>
                     <span class="meta-item">换手率: <strong>{turnover:.2f}%</strong></span>
                     <span class="meta-item">PE(TTM): <strong>{pe:.1f}x</strong></span>
+                    {period_strip}
                 </div>
             </div>
             <div>
@@ -399,9 +543,11 @@ def render_decision_card_html(card: dict[str, Any], output_path: str | None = No
             <h2>🎯 AST-Trader 五节点因果决断卡 (含实战战术执行)</h2>
             <div class="verdict-box">
                 <div class="verdict-title">⚡ 决断档位: {html.escape(gear)} | 建议仓位: <strong>{cap*100:.0f}%</strong></div>
+                {f'<div class="verdict-coaching" style="background: rgba(56, 189, 248, 0.12); border-left: 4px solid #38bdf8; padding: 10px 14px; border-radius: 6px; margin-bottom: 14px; color: #bae6fd; font-size: 13.5px; line-height: 1.5;">{html.escape(coaching)}</div>' if coaching else ''}
                 <div class="verdict-row"><strong>📌 核心买方矛盾:</strong> {html.escape(card.get('core_contradiction', ''))}</div>
+                {tactical_odds_html}
                 <div class="verdict-row"><strong>⚡ 实盘操作战术:</strong> {html.escape(card.get('action_tactic', ''))}</div>
-                <div class="verdict-row" style="color:#f87171;"><strong>🛑 实战防线 (T+1纪律):</strong> {html.escape(invalidation)}</div>
+                <div class="verdict-row" style="color:#f87171;"><strong>🛑 错了就退（必须守住）:</strong> {html.escape(plain(invalidation))}</div>
             </div>
         </section>
 
@@ -416,7 +562,7 @@ def render_decision_card_html(card: dict[str, Any], output_path: str | None = No
                 <div class="verdict-row"><strong>🎯 实操动作:</strong> <span style="color:#38bdf8;">{html.escape(card.get('recommended_action', '观望'))}</span> (建议主力仓位上限: <strong>{card.get('position_cap', 0.0)*100:.0f}%</strong>)</div>
                 <div class="verdict-row"><strong>🔍 操盘透视:</strong> {html.escape(card.get('main_force_behavior', ''))}</div>
                 {"<div class='verdict-row' style='color:#a78bfa;'><strong>🛡️ 反伪装审计:</strong> " + html.escape(' | '.join([x for x in card.get('anti_spoofing_summary', []) if '未检测到明显' not in x])) + "</div>" if [x for x in card.get('anti_spoofing_summary', []) if '未检测到明显' not in x] else ""}
-                <div class="verdict-row" style="color:#f87171;"><strong>⚠️ 证伪/突变条件:</strong> {html.escape(card.get('main_force_risk', ''))}</div>
+                {f"<div class='verdict-row' style='color:#f87171;'><strong>⚠️ 证伪/突变条件:</strong> {html.escape(str(card.get('main_force_risk', '')))}</div>" if card.get('main_force_risk') else ""}
             </div>
         </section>
 
@@ -426,6 +572,7 @@ def render_decision_card_html(card: dict[str, Any], output_path: str | None = No
             <div style="margin-bottom:12px; font-size:13px; color:var(--text-dim);">
                 {html.escape(card.get('profitability_dashboard', {}).get('industry_reason', ''))}
             </div>
+            {f"<div style='margin-bottom:10px; font-size:12px; color:#fbbf24;'>⚠️ 口径标注：最新值为 TTM 滚动 12 个月（截至 {html.escape(period_label)}）；A 股定期报告为年初至今累计口径，趋势序列前段为各年年报，末位 TTM 点为滚动口径，两者不可直接横比。</div>" if period_label and not _pb.get('is_annual') else ""}
             <table class="table">
                 <thead>
                     <tr>
@@ -441,30 +588,41 @@ def render_decision_card_html(card: dict[str, Any], output_path: str | None = No
             </table>
         </section>
 
+        <!-- 2.6 一句话结论（放在五段正文之前：读者不该被要求先读完黑话才知道能不能买） -->
+        <section class="section-card">
+            <h2>💡 一句话结论</h2>
+            <div class="verdict-box" style="border-color:#fbbf24;">
+                <div class="verdict-title" style="color:#fbbf24; white-space: pre-wrap;">{html.escape(one_line_summary(card))}</div>
+            </div>
+        </section>
+
         <!-- 3. A股五维实盘支柱 -->
         <section class="section-card">
             <h2>📊 A股五维实盘量化投研支柱 (Five Pillars)</h2>
             <div class="pillar-card" style="border-left-color: #38bdf8;">
-                <div class="pillar-title">❶ 是不是好公司？(质地五问 · 铁门筛选)</div>
-                <div class="pillar-content" style="white-space: pre-wrap;">{html.escape(card.get('pillar_1_quality') or card.get('pillar_gate') or '未接入')}</div>
+                <div class="pillar-title">❶ {PLAIN_PILLAR_TITLES['1'][0]} <span style="font-weight:400; opacity:.7;">— {PLAIN_PILLAR_TITLES['1'][1]}</span></div>
+                <div class="pillar-content" style="white-space: pre-wrap;">{html.escape(plain(card.get('pillar_1_quality') or card.get('pillar_gate') or '未接入'))}</div>
             </div>
             <div class="pillar-card" style="border-left-color: #818cf8;">
-                <div class="pillar-title">❷ 在变好吗？(状态跃迁 λ · 稀疏事件与全链唯一「该等什么」)</div>
-                <div class="pillar-content" style="white-space: pre-wrap;">{html.escape(card.get('pillar_2_state') or card.get('pillar_business') or '未接入')}</div>
+                <div class="pillar-title">❷ {PLAIN_PILLAR_TITLES['2'][0]} <span style="font-weight:400; opacity:.7;">— {PLAIN_PILLAR_TITLES['2'][1]}</span></div>
+                <div class="pillar-content" style="white-space: pre-wrap;">{html.escape(plain(card.get('pillar_2_state') or card.get('pillar_business') or '未接入'))}</div>
             </div>
             <div class="pillar-card" style="border-left-color: #f59e0b;">
-                <div class="pillar-title">❸ 贵不贵？(P=F+N 叙事溢价拆解 · 反向DCF · [SOTP, DCF]双锚)</div>
-                <div class="pillar-content" style="white-space: pre-wrap;">{html.escape(card.get('pillar_3_odds') or card.get('pillar_tape') or '未接入')}</div>
+                <div class="pillar-title">❸ {PLAIN_PILLAR_TITLES['3'][0]} <span style="font-weight:400; opacity:.7;">— {PLAIN_PILLAR_TITLES['3'][1]}</span></div>
+                <div class="pillar-content" style="white-space: pre-wrap;">{html.escape(plain(card.get('pillar_3_odds') or card.get('pillar_tape') or '未接入'))}</div>
             </div>
             <div class="pillar-card" style="border-left-color: #10b981;">
-                <div class="pillar-title">❹ 主力行为生命周期与路径承载 (7阶段微观穿透与筹码承载)</div>
-                <div class="pillar-content" style="white-space: pre-wrap;">{html.escape(card.get('pillar_4_path') or card.get('pillar_flow') or '未接入')}</div>
+                <div class="pillar-title">❹ {PLAIN_PILLAR_TITLES['4'][0]} <span style="font-weight:400; opacity:.7;">— {PLAIN_PILLAR_TITLES['4'][1]}</span></div>
+                <div class="pillar-content" style="white-space: pre-wrap;">{html.escape(plain(card.get('pillar_4_path') or card.get('pillar_flow') or '未接入'))}</div>
             </div>
             <div class="pillar-card" style="border-left-color: #ef4444;">
-                <div class="pillar-title">❺ 实战决断与执行战术 (双轨实操战术 · T+1防线)</div>
-                <div class="pillar-content" style="white-space: pre-wrap;"><strong>决断: {html.escape(card.get('decision_title', ''))}</strong>\n{html.escape(card.get('action_tactic', ''))}\n防线: {html.escape(invalidation)}</div>
+                <div class="pillar-title">❺ {PLAIN_PILLAR_TITLES['5'][0]} <span style="font-weight:400; opacity:.7;">— {PLAIN_PILLAR_TITLES['5'][1]}</span></div>
+                <div class="pillar-content" style="white-space: pre-wrap;"><strong>决断: {html.escape(plain(card.get('decision_title', '')))}</strong>\n{html.escape(plain(card.get('action_tactic', '')))}\n防线: {html.escape(plain(invalidation))}</div>
             </div>
         </section>
+
+        <!-- 3.5 术语速查（只列本报告真正用到的说法） -->
+        {_glossary_section_html(card)}
 
         <!-- 3. 实盘战术执行手册 -->
         <section class="section-card">
@@ -507,20 +665,25 @@ def render_decision_card_html(card: dict[str, Any], output_path: str | None = No
             <div style="margin-bottom:12px; font-size:13px;">
                 {health_status_banner}
             </div>
-            <table class="table">
-                <thead>
-                    <tr>
-                        <th style="width: 220px;">数据接口名称</th>
-                        <th style="width: 170px;">数据通道/源</th>
-                        <th style="width: 110px; text-align:center;">调用状态</th>
-                        <th style="width: 90px; text-align:right;">记录数</th>
-                        <th>异常详情 / 取数审计说明</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    {health_rows}
-                </tbody>
-            </table>
+            <details style="margin-top: 10px;">
+                <summary style="cursor: pointer; color: var(--neon-cyan); font-size: 13px; font-weight: 600; padding: 6px 0; outline: none;">
+                    🔍 点击展开 / 收起 {total_interfaces} 项底层数据通道状态明细
+                </summary>
+                <table class="table" style="margin-top: 12px;">
+                    <thead>
+                        <tr>
+                            <th style="width: 220px;">数据接口名称</th>
+                            <th style="width: 170px;">数据通道/源</th>
+                            <th style="width: 110px; text-align:center;">调用状态</th>
+                            <th style="width: 90px; text-align:right;">记录数</th>
+                            <th>异常详情 / 取数审计说明</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {health_rows}
+                    </tbody>
+                </table>
+            </details>
         </section>
 
         <footer class="footer">
