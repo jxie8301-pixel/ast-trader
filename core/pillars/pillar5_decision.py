@@ -388,14 +388,28 @@ def build_pillar_5_decision(
     reward_pct = round(max(0.1, (reward_target - price) / price * 100), 1) if price > 0 else 0.0
     odds_ratio = round(reward_pct / max(risk_pct, 0.5), 2) if risk_pct > 0 else 0.0
 
-    tactical_odds = {
-        "entry_range": f"{support_lvl:.2f} ~ {price:.2f}元",
-        "stop_loss": f"{stop_line:.2f}元 (-{risk_pct:.1f}%)",
-        "target_price": f"{reward_target:.2f}元 (+{reward_pct:.1f}%)",
-        "risk_reward_ratio": f"{odds_ratio:.2f}:1",
-        "key_support": f"{support_lvl:.2f}元",
-        "key_resistance": f"{resistance_lvl:.2f}元",
-    }
+    if decision_gear in DECISION_GEAR_AVOID or position_cap <= 0.0:
+        tactical_odds = {
+            "is_circuit_broken": True,
+            "circuit_breaker_reason": f"当前定调为【{decision_gear}】(仓位上限 {int(position_cap*100)}%)，触发买方防御熔断，禁止设定买入区间与向上目标价",
+            "entry_range": "禁止买入 (买方防守熔断)",
+            "stop_loss": f"{stop_line:.2f}元 (-{risk_pct:.1f}%)" if stop_line > 0 else "无",
+            "target_price": "无 (回避档位不设目标价)",
+            "risk_reward_ratio": "0.00:1 (盈亏比关闭)",
+            "key_support": f"{support_lvl:.2f}元" if support_lvl > 0 else "无",
+            "key_resistance": f"{resistance_lvl:.2f}元" if resistance_lvl > 0 else "无",
+            "stop_price": stop_line,
+        }
+    else:
+        tactical_odds = {
+            "entry_range": f"{support_lvl:.2f} ~ {price:.2f}元",
+            "stop_loss": f"{stop_line:.2f}元 (-{risk_pct:.1f}%)",
+            "target_price": f"{reward_target:.2f}元 (+{reward_pct:.1f}%)",
+            "risk_reward_ratio": f"{odds_ratio:.2f}:1",
+            "key_support": f"{support_lvl:.2f}元",
+            "key_resistance": f"{resistance_lvl:.2f}元",
+            "stop_price": stop_line,
+        }
 
     return DecisionVerdict(
         decision_gear=decision_gear,

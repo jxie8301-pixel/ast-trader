@@ -157,8 +157,8 @@ class PlaybookBuilder:
             return ExecutionPlaybook(
                 action="AVOID",
                 action_label="🚫 铁律回避 (禁止开仓)",
-                entry_tactic="触发财务审计红旗或破位杀猪特征，严禁任何形式的买入与抄底",
-                entry_price_range="N/A",
+                entry_tactic="触发买方风控回避或一票否决红线，严禁任何形式的买入与抄底",
+                entry_price_range="无 (零仓位防守不设买入区间)",
                 base_position_pct=0,
                 add_position_pct=0,
                 max_position_pct=0,
@@ -221,24 +221,42 @@ class PlaybookBuilder:
 
         if action == "WAIT":
             pct_chg = quote.get("pct_chg", 0.0)
-            if pct_chg < 0:
-                wait_tactic = "【破位/分歧观察】标的处于日线空头或破位调整中，次日早盘必须观察是否缩量企稳并形成反包弱转强，未确认企稳前严禁伸手抄底"
-            elif pct_chg >= 5.0:
-                wait_tactic = "【冲高回踩观察】短线涨幅偏大，防高位追高被套，等待分时均线回踩企稳获得承接后再行介入"
+            is_zero_cap = position_cap is not None and float(position_cap) <= 0.0
+            if is_zero_cap:
+                wait_tactic = "【零仓位防御】当前处于买方风控防守或证据匮乏期，仓位上限锁定为 0%，坚决不伸手建仓"
+                entry_range = "无 (零仓位防守不设买入区间)"
+                base_pos = 0
+                add_pos = 0
+                max_pos = 0
+                action_lbl = "👀 观望防御 (仓位锁定 0%)"
+                tp_tgt = "无持仓 / 保持空仓"
+                inv_rule = "风控死锁防线: 维持零仓位防守，未见增量放量与基本面反转前严禁建仓"
             else:
-                wait_tactic = "【筹码分歧观察】多空处于存量震荡博弈中，次日早盘观察是否有增量大单打破平衡"
+                max_pos = int(round(float(position_cap) * 100)) if position_cap is not None else 15
+                base_pos = 0
+                add_pos = max_pos
+                entry_range = f"观望区间: {support} ~ {close} 元"
+                action_lbl = "👀 观望确认 (等待临界点)"
+                tp_tgt = "待弱转强确认后再设止盈目标"
+                inv_rule = "死锁退出线: 若次日早盘直接低开低走跌破昨日最低点，坚决放弃该标的交易机会"
+                if pct_chg < 0:
+                    wait_tactic = "【破位/分歧观察】标的处于日线空头或破位调整中，次日早盘必须观察是否缩量企稳并形成反包弱转强，未确认企稳前严禁伸手抄底"
+                elif pct_chg >= 5.0:
+                    wait_tactic = "【冲高回踩观察】短线涨幅偏大，防高位追高被套，等待分时均线回踩企稳获得承接后再行介入"
+                else:
+                    wait_tactic = "【筹码分歧观察】多空处于存量震荡博弈中，次日早盘观察是否有增量大单打破平衡"
 
             return ExecutionPlaybook(
                 action="WAIT",
-                action_label="👀 观望确认 (等待临界点)",
+                action_label=action_lbl,
                 entry_tactic=wait_tactic,
-                entry_price_range=f"观望区间: {support} ~ {close} 元",
-                base_position_pct=0,
-                add_position_pct=10,
-                max_position_pct=15,
-                take_profit_target="待弱转强确认后再设止盈目标",
+                entry_price_range=entry_range,
+                base_position_pct=base_pos,
+                add_position_pct=add_pos,
+                max_position_pct=max_pos,
+                take_profit_target=tp_tgt,
                 stop_loss_line=f"下破 {support} 元彻底破坏形态",
-                invalidation_rule=f"死锁退出线: 若次日早盘直接低开低走跌破昨日最低点，坚决放弃该标的交易机会",
+                invalidation_rule=inv_rule,
             )
 
         if action == "AUCTION":

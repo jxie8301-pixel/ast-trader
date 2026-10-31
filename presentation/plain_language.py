@@ -307,6 +307,18 @@ def generate_plain_triad_coaching(card: dict[str, Any]) -> str:
     p5 = card.get("pillar_5_decision") or {}
     conclusion = str(p5.get("three_part_conclusion") or card.get("three_part_conclusion") or "")
     gear = str(card.get("decision_gear") or "")
+    pos_cap = float(card.get("position_cap", 0.0) or 0.0)
+
+    # 1. 回避与零仓位风控铁律优先拦截：绝不允许出现「好公司配好价格...主力在洗盘...建议加入自选观察」
+    if "回避" in gear or "减仓" in gear or pos_cap <= 0.0:
+        flags = card.get("all_flags") or card.get("top3_risks") or []
+        has_fatal = any(
+            (f.get("severity") in ("FATAL", "HIGH") or f.get("level") == "🔴")
+            for f in flags if isinstance(f, dict)
+        )
+        if has_fatal:
+            return "【💡 买方白话点拨】公司基本面排雷触发买方硬性风控（主营质量或财务真实性存疑），盘面缺乏增量做多合力，弱势中继平台极易破位补跌，坚决空仓回避不碰。"
+        return "【💡 买方白话点拨】公司基本面存在硬伤或估值严重透支，盘面缺乏增量做多合力，盈亏比极差，坚决回避不碰。"
 
     is_good_co = "好公司? 【是】" in conclusion or "好公司? 是" in conclusion
     is_good_bet = "好下注? 【是】" in conclusion or "好下注? 是" in conclusion
@@ -319,9 +331,7 @@ def generate_plain_triad_coaching(card: dict[str, Any]) -> str:
     elif is_good_co and is_good_price and is_good_bet:
         return "【💡 买方白话点拨】公司质地过硬，估值具有充分安全垫，且主力资金已给出明确的右侧买入信号，天时地利人和，可以积极按计划分批建仓。"
     elif not is_good_co and not is_good_bet:
-        return "【💡 买方白话点拨】公司基本面存在硬伤或估值严重透支，主力资金也在流出撤退，盈亏比极差，坚决回避不碰。"
-    elif "回避" in gear:
-        return "【💡 买方白话点拨】存在触碰买方硬性风控红线的瑕疵，当前赔率或路径极度不利，坚决一股不买。"
+        return "【💡 买方白话点拨】公司基本面存在硬伤或估值严重透支，盘面缺乏增量做多合力，盈亏比极差，坚决回避不碰。"
     elif "观察" in gear:
         return "【💡 买方白话点拨】基本面或估值尚可，但盘口缺乏右侧启动催化剂，建议持币观望，让子弹再飞一会儿。"
     else:

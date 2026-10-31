@@ -17,7 +17,7 @@ import config
 
 logger = logging.getLogger("ast_trader.ai.provider")
 
-__all__ = ["AIUnavailable", "chat", "chat_json", "extract_json"]
+__all__ = ["AIUnavailable", "chat", "chat_json", "extract_json", "call_llm"]
 
 
 class AIUnavailable(RuntimeError):
@@ -131,3 +131,6 @@ def chat_json(prompt: str, *, system: str = "", retries: int = 1, **kw: Any) -> 
                 attempt + 1, exc, last_raw[:80],
             )
     raise AIUnavailable("响应不可解析")  # pragma: no cover
+
+
+call_llm = chat

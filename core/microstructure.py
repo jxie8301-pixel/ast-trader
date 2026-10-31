@@ -84,6 +84,9 @@ class MicrostructureAnalyzer:
         float_share: float = 0.0,
         quote: dict[str, Any] | None = None,
         ticker: str = "DEFAULT",
+        flags: list[Any] | None = None,
+        is_fundamental_impaired: bool = False,
+        market_ice: bool = False,
         *,
         depth: Any | None = None,
         buy_sell_strength: Any | None = None,
@@ -308,6 +311,9 @@ class MicrostructureAnalyzer:
             momentum=momentum or {},
             ladder_info=ladder_info,
             float_share=float_share,
+            flags=flags,
+            is_fundamental_impaired=is_fundamental_impaired,
+            market_ice=market_ice,
         )
 
         stage_name = decision.stage_name

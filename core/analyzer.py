@@ -156,6 +156,14 @@ class SingleStockAnalyzer:
 
         # 4. 真实资金流与高频微观结构
         money_flow = self.collector.get_money_flow(ts_code)
+        if isinstance(sentiment_overview, dict):
+            market_ice = bool(sentiment_overview.get("is_market_ice", False)) or sentiment_overview.get("sentiment_phase") in ("冰点期", "退潮期", "退潮", "冰点")
+        elif sentiment_overview is not None:
+            phase = getattr(sentiment_overview, "sentiment_phase", "")
+            market_ice = phase in ("冰点期", "退潮期", "退潮", "冰点") or bool(getattr(sentiment_overview, "is_market_ice", False))
+        else:
+            market_ice = False
+
         microstructure = self.collector.get_microstructure(
             ts_code,
             current_price=quote.get("close", 0.0),
@@ -165,6 +173,8 @@ class SingleStockAnalyzer:
             float_share=quote.get("float_share", 0.0),
             quote=quote,
             analyzer=self.micro_analyzer,
+            flags=flags,
+            market_ice=market_ice,
         )
 
         # 5. 龙虎榜席位匹配

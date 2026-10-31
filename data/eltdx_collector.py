@@ -437,6 +437,10 @@ class EltdxCollector:
         float_share: float = 0.0,
         quote: dict[str, Any] | None = None,
         analyzer: Any | None = None,
+        flags: list[Any] | None = None,
+        is_fundamental_impaired: bool = False,
+        market_ice: bool = False,
+        **kwargs: Any,
     ) -> dict[str, Any]:
         """获取高频微观结构、知情交易与主力生命周期分析 (开源金工聪明钱 Q、时段切割与换手沉淀). 支持依赖注入 analyzer。"""
         eltdx_code, ts_code = normalize_code(code_str)
@@ -450,6 +454,7 @@ class EltdxCollector:
                 extra_micro_kw = self._fetch_micro_extras(eltdx_code)
             else:
                 extra_micro_kw = {}
+            extra_micro_kw.update(kwargs)
             prof = analyzer.analyze(
                 bars,
                 auction_data=ad,
@@ -459,7 +464,11 @@ class EltdxCollector:
                 ladder_info=ladder_info,
                 float_share=float_share,
                 quote=quote,
-                ticker=ts_code, **extra_micro_kw,
+                ticker=ts_code,
+                flags=flags,
+                is_fundamental_impaired=is_fundamental_impaired,
+                market_ice=market_ice,
+                **extra_micro_kw,
             )
             return {
                 "smart_q": prof.smart_q,

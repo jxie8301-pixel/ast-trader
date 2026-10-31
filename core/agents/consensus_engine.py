@@ -29,6 +29,40 @@ class ConsensusResult:
     consensus_certificate: dict[str, Any] = field(default_factory=dict)
 
 
+def harmonize_pillar_4_text(
+    p4_text: str,
+    aligned_stage: str,
+    aligned_behavior: str,
+) -> str:
+    """全面清洗并重塑支柱 4 路径文本，杜绝任何多头与洗盘矛盾叙事."""
+    if not p4_text:
+        return p4_text
+    import re
+    # 1. 替换判定与主力阶段
+    p4_text = re.sub(r"判定:\s*【[^】]+】", "判定: 【尾部风险高·不可承受】", p4_text)
+    p4_text = re.sub(r"\(主力阶段:\s*【[^】]+】", f"(主力阶段: {aligned_stage}", p4_text)
+    # 2. 替换操盘透视
+    if "• 操盘透视:" in p4_text:
+        p4_text = re.sub(r"• 操盘透视:.*?(?=\n\s*•|\Z)", f"• 操盘透视: {aligned_behavior}", p4_text, flags=re.DOTALL)
+    # 3. 词汇彻底收敛清洗
+    replacements = [
+        ("【⏳ 缩量洗盘蓄势期 (时间换空间)】", aligned_stage),
+        ("【🌱 低位隐蔽吸筹期】", aligned_stage),
+        ("【🕳️ 假破位恐慌挖坑期 (空头陷阱)】", aligned_stage),
+        ("【🚀 健康放量主升期】", aligned_stage),
+        ("【依托支撑均线回踩企稳低吸】", "【观望等待放量方向选择】"),
+        ("【逢低试仓 / 贴合主力成本建底仓】", "【空仓观望 / 严禁建仓】"),
+        ("【黄金坑低吸 / 等待右侧长阳收复】", "【严防破位 / 禁止左侧抄底】"),
+        ("【顺势做多 / 分时回踩均线低吸】", "【逢高离场 / 严禁追高参与】"),
+        ("筹码结构扎实健康", "盘面呈现无增量资金承接的存量弱势特征"),
+        ("主力以时间换空间耐心清洗浮动获利盘", "交投清淡且无增量资金做多意愿"),
+        ("主力资金大举建仓拉升", "缺乏持续增量资金做多合力"),
+    ]
+    for w_old, w_new in replacements:
+        p4_text = p4_text.replace(w_old, w_new)
+    return p4_text
+
+
 class MultiAgentConsensusEngine:
     """多智能体对抗与共识引擎."""
 
@@ -187,6 +221,74 @@ class MultiAgentConsensusEngine:
             t_odds["risk_reward_ratio"] = "0.00:1 (盈亏比关闭)"
             reconciled_decision["tactical_odds"] = t_odds
             reconciled_dash["tactical_odds"] = t_odds
+
+        # 仲裁 A4: 主力行为与生命周期共识化裁决 (彻底消灭"基本面硬伤回避"与"主力多头/洗盘"的撕裂)
+        mf_stage = str(reconciled_decision.get("main_force_stage") or reconciled_dash.get("main_force_stage") or "")
+        mf_behavior = str(reconciled_decision.get("main_force_behavior") or reconciled_dash.get("main_force_behavior") or "")
+        is_bullish = any(w in mf_stage for w in ["吸筹", "洗盘", "蓄势", "主升", "做多", "挖坑", "黄金坑", "放量", "健康"]) or any(
+            w in mf_behavior for w in ["扎实健康", "时间换空间", "清洗浮动", "耐心清洗", "建仓", "做多", "吸筹", "顺势"]
+        )
+        if (pos_cap == 0.0 or gear in ("回避", "减仓")) and is_bullish:
+            if "主升" in mf_stage or "放量" in mf_stage or "拉升" in mf_behavior:
+                aligned_stage = "【⚠️ 派发诱多/高危博弈期】"
+                aligned_behavior = (
+                    "股价虽呈现脉冲推升走势，但在公司触发买方风控硬伤且主力无增量持续合力背景下，"
+                    "此拉升本质属于脉冲诱多派发或存量资金自救，绝非健康放量主升；"
+                    "主力主升做多假设已被买方风控证伪，严禁盲目追高接盘。"
+                )
+                aligned_risk = "严防脉冲后快速回落跌停，触发买方硬性风控严禁参与任何刀口舔血。"
+                aligned_action = "【逢高离场 / 严禁追高参与】"
+            else:
+                aligned_stage = "【📉 弱势中继/无抵抗阴跌出清期】"
+                aligned_behavior = (
+                    "股价日线虽缩量窄幅整理，但在公司触发买方风控排雷且主力无增量资金进场背景下，"
+                    "此缩量本质属于交投清淡与承接力匮乏的弱势中继整理，绝非主力健康蓄势洗盘；"
+                    "主力多头蓄势假设已被风控证伪，严禁逆势抄底。"
+                )
+                aligned_risk = "防范中继平台向下破位，一旦击穿均线支撑或关键防守位，极易演变为加速补跌，严格空仓回避。"
+                aligned_action = "【空仓观望 / 绝不左侧接飞刀】"
+
+            reconciled_decision["main_force_stage"] = aligned_stage
+            reconciled_decision["main_force_behavior"] = aligned_behavior
+            reconciled_decision["main_force_risk"] = aligned_risk
+            reconciled_decision["recommended_action"] = aligned_action
+            reconciled_dash["main_force_stage"] = aligned_stage
+            reconciled_dash["main_force_behavior"] = aligned_behavior
+            reconciled_dash["main_force_risk"] = aligned_risk
+            reconciled_dash["recommended_action"] = aligned_action
+            if "microstructure" in reconciled_decision and isinstance(reconciled_decision["microstructure"], dict):
+                reconciled_decision["microstructure"]["main_force_stage"] = aligned_stage
+                reconciled_decision["microstructure"]["main_force_behavior"] = aligned_behavior
+                reconciled_decision["microstructure"]["main_force_risk"] = aligned_risk
+                reconciled_decision["microstructure"]["recommended_action"] = aligned_action
+                reconciled_decision["microstructure"]["suggested_pos_cap"] = 0.0
+                reconciled_decision["microstructure"]["decision_gear_override"] = "回避"
+
+            # 同步修正支柱 4 路径文本及其别名中的矛盾
+            for key in ["pillar_4_path", "pillar_flow", "pillar_path"]:
+                if key in reconciled_dash:
+                    reconciled_dash[key] = harmonize_pillar_4_text(str(reconciled_dash[key]), aligned_stage, aligned_behavior)
+                if key in reconciled_decision:
+                    reconciled_decision[key] = harmonize_pillar_4_text(str(reconciled_decision[key]), aligned_stage, aligned_behavior)
+
+            bb.post_message(ProtocolMessage(
+                sender=AgentRole.CIO_LEAD,
+                recipient=AgentRole.CAPITAL_MICRO,
+                msg_type=MessageType.OVERRIDE,
+                topic="MAIN_FORCE_NARRATIVE_HARMONIZATION",
+                content="基本面硬伤/风控锁定零仓位，强制驳回主力多头洗盘/主升叙事，统一重塑为弱势中继/诱多防御期。",
+            ))
+
+        # 仲裁 A5: 实操剧本与零仓位风控对齐
+        pb = reconciled_decision.get("playbook")
+        if pb and (pos_cap == 0.0 or gear in ("回避", "减仓")):
+            if hasattr(pb, "max_position_pct"):
+                setattr(pb, "base_position_pct", 0)
+                setattr(pb, "add_position_pct", 0)
+                setattr(pb, "max_position_pct", 0)
+                setattr(pb, "entry_price_range", "无 (零仓位防守不设买入区间)")
+                setattr(pb, "entry_tactic", "【零仓位防御】当前处于买方风控防守或证据匮乏期，仓位上限锁定为 0%，坚决不伸手建仓")
+                setattr(pb, "action_label", "👀 观望防御 (仓位锁定 0%)" if gear not in ("回避", "减仓") else "🚫 铁律回避 (禁止开仓)")
 
         # 仲裁 B: 核心买方矛盾智能截断自愈（拔除断尾）
         core_contra = str(reconciled_decision.get("core_contradiction", ""))

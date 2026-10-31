@@ -400,3 +400,108 @@ def test_empty_and_corrupt_data_robustness(engine):
     assert isinstance(dec, MainForceDecision)
     assert dec.confidence >= 15.0
     assert dec.suggested_pos_cap >= 0.0
+
+
+def test_relay_platform_trap_when_fundamental_impaired(engine):
+    """测试基本面受损标的缩量横盘时命中中继平台陷阱，直接定性为阴跌出清而非蓄势洗盘."""
+    daily_records = []
+    for i in range(25):
+        daily_records.append({"high": 33.5, "low": 32.5, "close": 32.8, "vol": 20000.0})
+    daily_records[0]["vol"] = 8000.0  # 缩量 0.4x
+    daily_df = pd.DataFrame(daily_records)
+
+    micro = {
+        "smart_q": 0.995,
+        "smart_vwap": 32.6,
+        "all_vwap": 32.7,
+        "smart_buy_ratio": 51.5,
+        "smart_sell_ratio": 48.5,
+        "smart_phase": "NEUTRAL",
+        "apm_pattern": "NEUTRAL",
+        "tail_vol_ratio": 8.0,
+    }
+    mom = {
+        "overhead_chip_pct": 12.0,
+        "current_drawdown": -3.0,
+        "is_bullish_ma": True,
+        "ma5": 32.8,
+        "ma20": 32.0,
+    }
+    quote = {"close": 32.8, "open": 32.7, "high": 33.0, "low": 32.6, "turnover_ratio": 0.5, "amount": 25000000.0}
+
+    # 注入审计硬伤红旗 (如莱克电气投资收益扭曲)
+    custom_flags = [{"title": "投资收益严重扭曲主营", "level": "🔴", "severity": "FATAL"}]
+
+    dec = engine.evaluate(
+        "603355.SH",
+        current_price=32.8,
+        quote=quote,
+        daily_df=daily_df,
+        microstructure=micro,
+        momentum=mom,
+        flags=custom_flags,
+    )
+
+    assert dec.anti_spoofing.relay_platform_trap_detected is True
+    assert dec.stage_code == StageCode.STAGE_7_PASSIVE_DRIFT
+    assert "弱势中继" in dec.stage_name or "阴跌出清" in dec.stage_name
+    assert dec.suggested_pos_cap == 0.0
+    assert dec.decision_gear_override == "回避"
+
+
+def test_genuine_quiet_washout_not_trapped_when_active_buying(engine):
+    """测试基本面健康且微观主力主动承接充分时，缩量整理正确定性为 STAGE_3 蓄势洗盘."""
+    daily_records = []
+    for i in range(25):
+        daily_records.append({"high": 20.2, "low": 19.8, "close": 20.0, "vol": 20000.0})
+    daily_records[0]["vol"] = 9000.0  # 缩量至 0.45x
+    daily_df = pd.DataFrame(daily_records)
+
+    micro = {
+        "smart_q": 1.002,
+        "smart_vwap": 20.0,
+        "all_vwap": 20.0,
+        "smart_buy_ratio": 66.0,  # 主动知情买盘占比高
+        "smart_sell_ratio": 34.0,
+        "smart_phase": "ACCUMULATION",
+        "apm_pattern": "PM_ABSORPTION",
+        "tail_vol_ratio": 10.0,
+    }
+    mom = {
+        "overhead_chip_pct": 15.0,
+        "current_drawdown": -3.0,
+        "is_bullish_ma": True,
+        "ma5": 20.1,
+        "ma20": 19.5,
+    }
+    quote = {"close": 20.0, "open": 20.0, "high": 20.2, "low": 19.9, "turnover_ratio": 0.8, "amount": 40000000.0}
+
+    # 无基本面红旗，大盘正常
+    dec = engine.evaluate(
+        "002001.SZ",
+        current_price=20.0,
+        quote=quote,
+        daily_df=daily_df,
+        microstructure=micro,
+        momentum=mom,
+        flags=[],
+        market_ice=False,
+    )
+
+    assert dec.anti_spoofing.relay_platform_trap_detected is False
+    assert dec.stage_code == StageCode.STAGE_3_QUIET_WASHOUT
+    assert dec.suggested_pos_cap == 0.15
+
+
+def test_flags_with_custom_dicts_without_level_or_severity(engine):
+    """测试 flags 中含有无 level / severity 属性的自定义 dict 时优雅解析不崩潰."""
+    quote = {"close": 10.0, "turnover_ratio": 1.0}
+    custom_flags = [
+        {"title": "普通提示信息", "note": "自定义描述"},
+        {"title": "存贷双高风险暴露", "custom_metric": 123},
+    ]
+
+    dec = engine.evaluate("000001.SZ", current_price=10.0, quote=quote, flags=custom_flags)
+    assert isinstance(dec, MainForceDecision)
+    assert dec.anti_spoofing.relay_platform_trap_detected is True
+

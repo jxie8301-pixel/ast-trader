@@ -86,9 +86,18 @@ class AntiSpoofingAudit:
     stealth_accumulation_detected: bool = False
     stealth_accumulation_detail: str = ""
 
+    relay_platform_trap_detected: bool = False
+    relay_platform_trap_penalty: float = 0.0
+    relay_platform_trap_detail: str = ""
+
     def total_penalty(self) -> float:
+        return (
+            self.wash_trading_penalty
+            + self.fake_breakout_penalty
+            + self.tail_pump_penalty
+            + self.relay_platform_trap_penalty
+        )
         """汇总扣分与惩罚。"""
-        return self.wash_trading_penalty + self.fake_breakout_penalty + self.tail_pump_penalty
 
     def summary_lines(self) -> list[str]:
         """输出人类可读的审计清单。"""
@@ -103,6 +112,8 @@ class AntiSpoofingAudit:
             lines.append(f"🕳️ 空头陷阱/假破位 (洗盘确认 +{self.fake_breakdown_bonus:.0f}分): {self.fake_breakdown_detail}")
         if self.quiet_washout_confirmed:
             lines.append(f"⏳ 缩量时间换空间: {self.quiet_washout_detail}")
+        if self.relay_platform_trap_detected:
+            lines.append(f"⚠️ 中继平台/无承接衰竭陷阱 (扣减 -{self.relay_platform_trap_penalty:.0f}分): {self.relay_platform_trap_detail}")
         if self.tail_pump_detected:
             lines.append(f"⚠️ 尾盘拉抬偷袭 (扣减 -{self.tail_pump_penalty:.0f}分): {self.tail_pump_detail}")
         if self.stealth_accumulation_detected:
@@ -201,6 +212,9 @@ class MainForceStateEngine:
         momentum: dict[str, Any] | None = None,
         ladder_info: dict[str, Any] | None = None,
         float_share: float = 0.0,
+        flags: list[Any] | None = None,
+        is_fundamental_impaired: bool = False,
+        market_ice: bool = False,
     ) -> MainForceDecision:
         """全量评估主力所处阶段，执行反伪装检测、多维共振打分、置信度度量与状态机流转。"""
         quote = quote or {}
@@ -249,6 +263,19 @@ class MainForceStateEngine:
             ma20=ma20,
         )
 
+        # 解析基本面受损及大盘环境 (多智能体协同底座)
+        if flags and not is_fundamental_impaired:
+            for f in flags:
+                lvl = getattr(f, "level", "") or (f.get("level") if isinstance(f, dict) else "")
+                sev = getattr(f, "severity", "") or (f.get("severity") if isinstance(f, dict) else "")
+                title = str(getattr(f, "title", "") or (f.get("title") if isinstance(f, dict) else ""))
+                if lvl in ("🔴", "LEVEL_FATAL") or sev in ("FATAL", "HIGH"):
+                    is_fundamental_impaired = True
+                    break
+                if any(k in title for k in ["存贷双高", "投资收益严重扭曲", "筹码急剧散户化", "财务状况脆弱", "DuPont"]):
+                    is_fundamental_impaired = True
+                    break
+
         # ─── 2. 执行 7 大反伪装与欺骗过滤器检测 ───
         audit = self._run_anti_spoofing_audit(
             current_price=current_price,
@@ -271,6 +298,8 @@ class MainForceStateEngine:
             avg_amplitude_5d=avg_amplitude_5d,
             price_position_60d=price_position_60d,
             price_breakdown=price_breakdown,
+            is_fundamental_impaired=is_fundamental_impaired,
+            market_ice=market_ice,
         )
 
         # ─── 3. 7 大阶段多维量化打分 (满分 100 分) ───
@@ -339,6 +368,8 @@ class MainForceStateEngine:
             board_level=board_level,
             price_position_60d=price_position_60d,
             audit=audit,
+            turnover=turnover,
+            vol_ratio_20d=vol_ratio_20d,
         )
 
         # ★★ 置信度不足时不得用确定性口吻给阶段定性。
@@ -453,6 +484,8 @@ class MainForceStateEngine:
         avg_amplitude_5d: float,
         price_position_60d: float,
         price_breakdown: bool,
+        is_fundamental_impaired: bool = False,
+        market_ice: bool = False,
     ) -> AntiSpoofingAudit:
         """运行 7 大反伪装核心算法。"""
         audit = AntiSpoofingAudit()
@@ -509,12 +542,46 @@ class MainForceStateEngine:
                 f"高频微观反向呈现午后机构主动承接 (买盘 {smart_buy_ratio:.1f}%)，判定为主力刻意砸坑洗盘的假破位空头陷阱。"
             )
 
-        # 5. 缩量洗盘与时间换空间筹码沉降确认
-        if vol_ratio_20d <= 0.65 and avg_amplitude_5d <= 3.8 and overhead_chips < 35.0 and not price_breakdown:
+        # 5. 缩量洗盘与时间换空间筹码沉降确认 vs 中继平台陷阱识别
+        # 核心定义：中继平台陷阱是指表面缩量收敛横盘，但实际上缺乏增量知情资金主动承接，
+        # 或大盘/基本面处于高危回避，极易向下破位中继阴跌。
+        is_consolidating = (vol_ratio_20d <= 0.95 and avg_amplitude_5d <= 5.5) or turnover <= 1.5
+        if is_consolidating and (
+            is_fundamental_impaired
+            or market_ice
+            or smart_buy_ratio < 50.0
+            or smart_sell_ratio >= 50.0
+            or smart_phase in ("SMART_DISTRIBUTION", "DISTRIBUTION")
+            or apm_pattern in ("PASSIVE_DRIFT", "AM_PUMP_PM_DUMP")
+            or (turnover < 1.0 and smart_buy_ratio < 55.0)
+        ):
+            audit.relay_platform_trap_detected = True
+            audit.relay_platform_trap_penalty = 35.0
+            reasons = []
+            if is_fundamental_impaired:
+                reasons.append("公司基本面触发买方硬伤或排雷高危风控")
+            if market_ice:
+                reasons.append("大盘处于退潮或冰点弱市")
+            if turnover < 1.0 or smart_buy_ratio < 52.0:
+                reasons.append(f"微观缺乏增量资金做多承接 (换手 {turnover:.2f}%, 买盘 {smart_buy_ratio:.1f}%)")
+            reason_text = "；".join(reasons) if reasons else "微观买卖缺乏主动做多合力"
+            audit.relay_platform_trap_detail = (
+                f"股价虽呈现缩量窄幅整理 (20日量比 {vol_ratio_20d:.2f})，但{reason_text}，"
+                f"属于典型的无增量承接弱势中继阴跌平台陷阱，严禁误判为主力健康蓄势洗盘！"
+            )
+
+        if (
+            vol_ratio_20d <= 0.65
+            and avg_amplitude_5d <= 3.8
+            and overhead_chips < 35.0
+            and not price_breakdown
+            and not audit.relay_platform_trap_detected
+            and smart_buy_ratio >= 50.0
+        ):
             audit.quiet_washout_confirmed = True
             audit.quiet_washout_detail = (
                 f"日均振幅压缩至 {avg_amplitude_5d:.2f}%，量能显著衰竭至 20 日均量的 {vol_ratio_20d*100:.0f}%，"
-                f"上方套牢盘已充分沉降至低位 (套牢仅 {overhead_chips:.1f}%)，符合主力缩量洗盘以时间换空间特征。"
+                f"上方套牢盘已充分沉降至低位 (套牢仅 {overhead_chips:.1f}%)，微观买盘保持主动承接 ({smart_buy_ratio:.1f}%)，符合主力缩量洗盘蓄势特征。"
             )
 
         # 6. 尾盘偷袭拉抬/刻意打压惩罚 (Tail Pump / Dump)
@@ -649,6 +716,8 @@ class MainForceStateEngine:
         # 扣分：大起大落或放巨量非缩量洗盘
         if vol_ratio_20d > 1.4 or abs(pct_chg) > 4.5:
             s3 -= 35.0
+        if audit.relay_platform_trap_detected:
+            s3 = 0.0
         scores[StageCode.STAGE_3_QUIET_WASHOUT.value] = max(0.0, min(100.0, s3))
 
         # -------------------------------------------------------------
@@ -745,15 +814,18 @@ class MainForceStateEngine:
             s7 += 15.0
         if current_dd < -18.0:
             s7 += 10.0
-        # 扣分：若均线多头且处于主升通道
-        if is_bullish_ma and current_price > ma20 and overhead_chips < 30.0:
-            s7 -= 50.0
+        if audit.relay_platform_trap_detected:
+            s7 += 45.0
+        else:
+            # 扣分：若均线多头且处于主升通道
+            if is_bullish_ma and current_price > ma20 and overhead_chips < 30.0:
+                s7 -= 50.0
 
-        # 扣分：若盘口存在主动承接（聪明钱主动买盘显著且价格获得知情均线支撑），非「无抵抗」
-        if smart_buy_ratio >= 55.0 and current_price >= smart_vwap:
-            s7 -= 35.0
-        elif smart_buy_ratio > smart_sell_ratio:
-            s7 -= 15.0
+            # 扣分：若盘口存在主动承接（聪明钱主动买盘显著且价格获得知情均线支撑），非「无抵抗」
+            if smart_buy_ratio >= 55.0 and current_price >= smart_vwap:
+                s7 -= 35.0
+            elif smart_buy_ratio > smart_sell_ratio:
+                s7 -= 15.0
 
         # 扣分：若换手充沛成交活跃，非「流动性枯竭」
         turnover_val = float(turnover or 0.0)
@@ -895,7 +967,9 @@ class MainForceStateEngine:
         smart_sell_ratio: float,
         board_level: int,
         price_position_60d: float,
-        audit: AntiSpoofingAudit,
+        audit: Optional[AntiSpoofingAudit] = None,
+        turnover: float = 0.0,
+        vol_ratio_20d: float = 1.0,
     ) -> dict[str, Any]:
         """构建各阶段的文本描述、证伪条件及硬核仓位死锁配置。"""
         profit_pct = ((current_price / smart_vwap) - 1.0) * 100.0 if smart_vwap > 0 else 0.0
@@ -998,21 +1072,27 @@ class MainForceStateEngine:
             }
 
         else:  # STAGE_7_PASSIVE_DRIFT
+            if audit and getattr(audit, "relay_platform_trap_detected", False):
+                return {
+                    "stage_name": "【📉 弱势中继/无抵抗阴跌出清期】",
+                    "suggested_pos_cap": 0.0,
+                    "recommended_action": "【空仓观望 / 绝不左侧接飞刀】",
+                    "decision_gear_override": "回避",
+                    "behavior_desc": (
+                        f"股价日线虽缩量窄幅整理 (换手仅 {turnover:.2f}%, 20日量比 {vol_ratio_20d:.2f})，"
+                        f"但盘面缺乏增量知情资金做多意愿，属于典型的无承接弱势中继阴跌平台陷阱，绝非主力健康蓄势洗盘；"
+                        f"主力多头蓄势假设已被买方风控与承接匮乏证伪，严格防范中继向下破位补跌。"
+                    ),
+                    "risk_alert": "防范中继平台向下破位，一旦击穿均线支撑或关键防守位，极易演变为加速补跌，严格空仓回避。",
+                }
+
             # ★★ 修复：价格关系与资金方向必须由**数值派生**，不得模板硬编码。
-            #
-            # 原文案无条件写「现价显著跌破知情均线」，但 STAGE_7 判定里
-            # 「跌破知情均线」只是 15 分的**加分项**（见本文件 :710-711），
-            # 并非必要条件。科达利靠「套牢盘 64.1%」(+30 分) 达标，现价
-            # 162.98 反而**高于**知情均线 148.52 —— 报告却写着「显著跌破」，
-            # 与同一段落里的数字直接冲突。
             if smart_vwap > 0:
                 if current_price < smart_vwap * 0.97:
                     price_rel = (
                         f"现价 ({current_price:.2f}元) 显著跌破知情均线 ({smart_vwap:.2f}元)"
                     )
                 elif current_price > smart_vwap * 1.03:
-                    # ★ 措辞不得出现「跌破」二字，否则与\"已站上\"自相冲突
-                    #   （且会让\"是否破位\"的文本检索失效）。
                     price_rel = (
                         f"现价 ({current_price:.2f}元) 已站上知情均线 ({smart_vwap:.2f}元) "
                         f"{(current_price / smart_vwap - 1.0) * 100:.1f}%，"
@@ -1025,8 +1105,6 @@ class MainForceStateEngine:
             else:
                 price_rel = f"知情均线未核验，现价 {current_price:.2f}元"
 
-            # ★ 与反伪装模块（:432-441）取**同一真值源**：买/卖占比谁大。
-            #   避免"反伪装说接力(买)、这里说派发(卖)"的自相矛盾。
             if smart_sell_ratio > smart_buy_ratio:
                 flow_desc = (
                     f"微观卖盘占比 {smart_sell_ratio:.1f}% 高于买盘 {smart_buy_ratio:.1f}%，"

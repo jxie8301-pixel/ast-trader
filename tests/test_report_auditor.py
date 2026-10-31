@@ -41,3 +41,31 @@ def test_report_auditor_heals_dangling_headers_and_conflicts():
     assert "139.68" in healed["main_force_risk"]
     assert "维持中性底仓" not in healed["capital_matrix"]["verdict"]
     assert "保持空仓防御，严禁底仓开仓" in healed["capital_matrix"]["verdict"]
+
+
+def test_report_auditor_heals_bullish_stages_and_pillar4_aliases():
+    """测试总编审对残留多头阶段及各别名支柱文本的全局兜底净化."""
+    auditor = ReportAuditor()
+    card = {
+        "ticker": "603355",
+        "name": "莱克电气",
+        "position_cap": 0.0,
+        "decision_gear": "回避",
+        "main_force_stage": "【🚀 健康放量主升期】",
+        "main_force_behavior": "主力资金大举建仓拉升",
+        "recommended_action": "【顺势做多 / 分时回踩均线低吸】",
+        "pillar_4_path": "判定: 【可承受】 (主力阶段: 【🚀 健康放量主升期】)\n  • 操盘透视: 主力资金大举建仓拉升",
+        "pillar_flow": "判定: 【可承受】 (主力阶段: 【🚀 健康放量主升期】)\n  • 操盘透视: 主力资金大举建仓拉升",
+        "pillar_path": "判定: 【可承受】 (主力阶段: 【🚀 健康放量主升期】)\n  • 操盘透视: 主力资金大举建仓拉升",
+    }
+
+    healed = auditor.audit_and_heal_report(card)
+
+    assert "主升" not in healed["main_force_stage"]
+    assert "严禁追高" in healed["recommended_action"] or "回避观望" in healed["recommended_action"]
+    for key in ["pillar_4_path", "pillar_flow", "pillar_path"]:
+        text = healed[key]
+        assert "判定: 【尾部风险高·不可承受】" in text
+        assert "健康放量主升期" not in text
+        assert "大举建仓拉升" not in text
+
